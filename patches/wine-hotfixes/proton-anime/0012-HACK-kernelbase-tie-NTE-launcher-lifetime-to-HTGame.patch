@@ -1,0 +1,121 @@
+From ddfe95b427134aee3801c037c51febc9c27a140a Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 10 Jul 2026 12:00:00 +0200
+Subject: [PATCH] HACK: kernelbase: tie NTE launcher lifetime to HTGame.exe
+
+Creates a watchdog thread in NTEGlobalGame.exe that waits
+for HTGame.exe and terminates the launcher when the game exits,
+or after PROTON_NTE_HIDE_LAUNCHER_TIMEOUT seconds.
+---
+ dlls/kernelbase/main.c | 100 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 100 insertions(+)
+
+diff --git a/dlls/kernelbase/main.c b/dlls/kernelbase/main.c
+--- a/dlls/kernelbase/main.c
++++ b/dlls/kernelbase/main.c
+@@ -37,6 +37,94 @@
+ 
+ BOOL is_wow64 = FALSE;
+ 
++/* HACK: PROTON_NTE_HIDE_LAUNCHER=1: wait for HTGame.exe to appear, then
++ * terminate the launcher once the game exits. */
++static HANDLE nte_open_game_process(void)
++{
++    SYSTEM_PROCESS_INFORMATION *spi;
++    UNICODE_STRING gameW;
++    ULONG size = 0x10000, needed;
++    NTSTATUS status;
++    HANDLE ret = NULL;
++    char *buffer;
++
++    for (;;)
++    {
++        if (!(buffer = HeapAlloc( GetProcessHeap(), 0, size ))) return NULL;
++        status = NtQuerySystemInformation( SystemProcessInformation, buffer, size, &needed );
++        if (status != STATUS_INFO_LENGTH_MISMATCH) break;
++        HeapFree( GetProcessHeap(), 0, buffer );
++        size = needed + 0x4000;
++    }
++
++    if (!status)
++    {
++        RtlInitUnicodeString( &gameW, L"HTGame.exe" );
++        spi = (SYSTEM_PROCESS_INFORMATION *)buffer;
++        for (;;)
++        {
++            if (spi->ProcessName.Buffer && RtlEqualUnicodeString( &spi->ProcessName, &gameW, TRUE ) &&
++                (ret = OpenProcess( SYNCHRONIZE, FALSE, HandleToUlong( spi->UniqueProcessId ) )))
++                break;
++            if (!spi->NextEntryOffset) break;
++            spi = (SYSTEM_PROCESS_INFORMATION *)((char *)spi + spi->NextEntryOffset);
++        }
++    }
++    HeapFree( GetProcessHeap(), 0, buffer );
++    return ret;
++}
++
++static DWORD WINAPI nte_launcher_watchdog( void *arg )
++{
++    ULONGLONG deadline;
++    DWORD timeout = 300;
++    HANDLE game;
++    char buf[16];
++
++    if (GetEnvironmentVariableA( "PROTON_NTE_HIDE_LAUNCHER_TIMEOUT", buf, sizeof(buf) ))
++        timeout = strtol( buf, NULL, 10 );
++    deadline = GetTickCount64() + timeout * 1000ull;
++
++    while (!(game = nte_open_game_process()))
++    {
++        if (timeout && GetTickCount64() > deadline)
++        {
++            FIXME( "HACK: HTGame.exe did not appear within %lus, terminating NTE launcher.\n", timeout );
++            TerminateProcess( GetCurrentProcess(), 1 );
++        }
++        Sleep( 2000 );
++    }
++
++    FIXME( "HACK: HTGame.exe is up, NTE launcher now lives only as long as the game.\n" );
++    do
++    {
++        WaitForSingleObject( game, INFINITE );
++        CloseHandle( game );
++        /* the game may relaunch itself (updates, anti-cheat); only give up
++         * when no new instance shows up */
++        Sleep( 3000 );
++    } while ((game = nte_open_game_process()));
++
++    FIXME( "HACK: HTGame.exe exited, terminating NTE launcher.\n" );
++    TerminateProcess( GetCurrentProcess(), 0 );
++    return 0;
++}
++
++static void nte_hide_launcher_init(void)
++{
++    WCHAR path[MAX_PATH], *p, *name = path;
++    HANDLE thread;
++    char buf[4];
++
++    if (!(GetEnvironmentVariableA( "PROTON_NTE_HIDE_LAUNCHER", buf, sizeof(buf) ) && buf[0] == '1')) return;
++    if (!GetModuleFileNameW( NULL, path, MAX_PATH )) return;
++    for (p = path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    if (wcsicmp( name, L"NTEGlobalGame.exe" )) return;
++
++    FIXME( "HACK: PROTON_NTE_HIDE_LAUNCHER=1, tying NTE launcher lifetime to HTGame.exe.\n" );
++    if ((thread = CreateThread( NULL, 0, nte_launcher_watchdog, NULL, 0, NULL ))) CloseHandle( thread );
++}
++
+ /***********************************************************************
+  *           DllMain
+  */
+@@ -50,6 +141,7 @@
+         init_locale( hinst );
+         init_startup_info( NtCurrentTeb()->Peb->ProcessParameters );
+         init_console();
++        nte_hide_launcher_init();
+     }
+     return TRUE;
+ }
+-- 
+2.51.0
+

@@ -328,6 +328,7 @@ apply_all_in_dir() {
 
     # HSR hacks ported from https://repo.tukandev.com/TTL-extras/sparkle
     echo "WINE: -PROTON-ANIME- HACK: HSR wintrust catalog stub + first-request block (StarRail.exe)"
+    echo "WINE: -PROTON-ANIME- HACK: NTE hide-launcher mode (PROTON_NTE_HIDE_LAUNCHER=1)"
     apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
 
 ### END PROTON-ANIME CUSTOM PATCHES ###
