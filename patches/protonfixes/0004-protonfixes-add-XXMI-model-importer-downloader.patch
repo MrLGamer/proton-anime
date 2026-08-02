@@ -1,0 +1,443 @@
+From 1d4651b53fb6101d927b192421727966e1dd97f0 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 18 Jul 2026 15:33:29 +0200
+Subject: [PATCH] protonfixes: add XXMI model importer downloader
+
+The importer package and the shared XXMI libs are downloaded from GitHub
+releases and deployed into `drive_c/xxmi/<IMPORTER>/`. Enabled through the
+`PROTON_USE_XXMI` environment variable, which picks the right importer from
+the game exe or launcher folder on its own, i.e.
+
+```
+PROTON_USE_XXMI=1 %command%
+```
+
+or through the game specific variables `PROTON_USE_EFMI`, `PROTON_USE_WWMI`,
+`PROTON_USE_GIMI`, `PROTON_USE_SRMI`, `PROTON_USE_ZZMI` and `PROTON_USE_HIMI`
+directly. Setting a version number instead of `1` pins the importer release,
+`PROTON_XXMI_LIBS` pins the shared libs.
+
+Mods are host-side in `$XDG_DATA_HOME/xxmi/<IMPORTER>/Mods` and symlinked
+into the prefix. Direct game launches get the needed D3D11 argument appended
+and the `PROTON_XXMI_*` toggles mirror the XXMI Launcher settings into
+`d3dx.ini`. `PROTON_USE_GIMI_DEV=1` deploys the old GIMI v7 dev build as a
+debug option for any game. Details in the README.
+---
+ __init__.py |   2 +
+ xxmi.py     | 385 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 387 insertions(+)
+ create mode 100644 xxmi.py
+
+diff --git a/__init__.py b/__init__.py
+index a07e5f3..31e63d6 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -8,6 +8,7 @@ from typing import Callable
+ from . import fix
+ from .logger import log
+ from .upscalers import setup_upscalers
++from .xxmi import setup_xxmi
+ from .utilities import (
+     setup_frame_rate,
+     setup_local_shader_cache,
+@@ -117,5 +118,6 @@ __all__ = [
+     'setup_local_shader_cache',
+     'setup_mount_drives',
+     'setup_upscalers',
++    'setup_xxmi',
+     'winetricks',
+ ]
+diff --git a/xxmi.py b/xxmi.py
+new file mode 100644
+index 0000000..9e96b8b
+--- /dev/null
++++ b/xxmi.py
+@@ -0,0 +1,385 @@
++"""Download and deploy XXMI model importers (3dmigoto) into the wine prefix"""
++
++import json
++import os
++import shutil
++import sys
++import urllib.request
++import zipfile
++from pathlib import Path
++
++from .logger import log
++from .config import config
++
++# One entry per supported model importer, keyed by compat_config token.
++# The importer package (d3dx.ini, Core, ShaderFixes, Mods) is merged with the
++# shared XXMI 3dmigoto libs and deployed to drive_c/xxmi/<folder>/.
++__importers = {
++    'efmi': {
++        'repo': 'SpectrumQT/EFMI-Package',
++        'asset': 'EFMI-PACKAGE-v{0}.zip',
++        'folder': 'EFMI',
++        'env_var': 'PROTON_USE_EFMI',
++        'arg': '-force-d3d11',
++    },
++    'wwmi': {
++        'repo': 'SpectrumQT/WWMI-Package',
++        'asset': 'WWMI-PACKAGE-v{0}.zip',
++        'folder': 'WWMI',
++        'env_var': 'PROTON_USE_WWMI',
++        'arg': '-dx11',
++        'delay': '500',
++    },
++    'gimi': {
++        'repo': 'SilentNightSound/GIMI-Package',
++        'asset': 'GIMI-PACKAGE-v{0}.zip',
++        'folder': 'GIMI',
++        'env_var': 'PROTON_USE_GIMI',
++    },
++    'srmi': {
++        'repo': 'SpectrumQT/SRMI-Package',
++        'asset': 'SRMI-TEST-PACKAGE-v{0}.zip',
++        'folder': 'SRMI',
++        'env_var': 'PROTON_USE_SRMI',
++    },
++    'zzmi': {
++        'repo': 'leotorrez/ZZMI-Package',
++        'asset': 'ZZMI-PACKAGE-v{0}.zip',
++        'folder': 'ZZMI',
++        'env_var': 'PROTON_USE_ZZMI',
++    },
++    'himi': {
++        'repo': 'leotorrez/HIMI-Package',
++        'asset': 'HIMI-PACKAGE-v{0}.zip',
++        'folder': 'HIMI',
++        'env_var': 'PROTON_USE_HIMI',
++    },
++    # SilentNightSound's original GIMI dev build, as a debug option for any
++    # game: ships its own 3dmigoto libs and a hunting-enabled d3dx.ini that
++    # is deployed as-is, and is never picked by exe auto-detection.
++    # Its 3D Vision nvapi wrapper is skipped: when NvAPI_Initialize fails
++    # (dxvk-nvapi on AMD), it calls into the freed real nvapi and crashes
++    # the game.
++    'gimidev': {
++        'repo': 'SilentNightSound/GI-Model-Importer',
++        'asset': '3dmigoto-GIMI-for-development.zip',
++        'folder': 'GIMI-DEV',
++        'env_var': 'PROTON_USE_GIMI_DEV',
++        'strip': '3dmigoto/',
++        'exclude': ('nvapi64.dll',),
++        'dlls': ('d3d11.dll', 'd3dcompiler_46.dll'),
++        'stock_ini': True,
++    },
++}
++
++# game exe -> importer, for PROTON_USE_XXMI auto-detection
++__exe_importers = {
++    'endfield.exe': 'efmi',
++    'client-win64-shipping.exe': 'wwmi',
++    'wuthering waves.exe': 'wwmi',
++    'genshinimpact.exe': 'gimi',
++    'yuanshen.exe': 'gimi',
++    'starrail.exe': 'srmi',
++    'zenlesszonezero.exe': 'zzmi',
++    'bh3.exe': 'himi',
++}
++
++# launcher launches (launcher.exe): the game lives below the launcher folder,
++# e.g. HYP games/<Game>/<exe> or Kuro "Wuthering Waves Game"/<exe>
++def __find_game_importers(root: Path) -> set:
++    found = set()
++    for folder, dirs, files in os.walk(root):
++        if len(Path(folder).relative_to(root).parts) >= 3:
++            dirs.clear()
++        for file in files:
++            name = __exe_importers.get(file.lower())
++            if name:
++                found.add(name)
++    return found
++
++
++__libs_repo = 'SpectrumQT/XXMI-Libs-Package'
++__libs_asset = 'XXMI-PACKAGE-v{0}.zip'
++__libs_dlls = ('d3d11.dll', 'd3dcompiler_47.dll')
++
++__deploy_root = 'drive_c/xxmi'
++__version_file = 'xxmi_versions'
++
++
++def __get_latest_version(repo: str) -> str:
++    url = f'https://api.github.com/repos/{repo}/releases/latest'
++    with urllib.request.urlopen(url, timeout=10) as url_fd:
++        return json.loads(url_fd.read())['tag_name'].lstrip('v')
++
++
++def __cached_download(repo: str, asset: str, version: str) -> Path:
++    cache_dir = config.path.cache_dir.joinpath('xxmi')
++    cache_dir.mkdir(parents=True, exist_ok=True)
++    # unversioned asset names get the version prefixed so pins don't collide
++    cached_file = cache_dir.joinpath(
++        asset.format(version) if '{0}' in asset else f'v{version}-{asset}'
++    )
++    if cached_file.is_file() and zipfile.is_zipfile(cached_file):
++        return cached_file
++    url = f'https://github.com/{repo}/releases/download/v{version}/{asset.format(version)}'
++    log.info(f'Downloading "{url}"')
++    tmp_file = cached_file.with_suffix('.tmp')
++    with urllib.request.urlopen(url, timeout=10) as url_fd:
++        with tmp_file.open('wb') as tmp_fd:
++            shutil.copyfileobj(url_fd, tmp_fd)
++    tmp_file.rename(cached_file)
++    return cached_file
++
++
++def __get_tracked_versions(compat_dir: str) -> dict:
++    try:
++        with Path(compat_dir).joinpath(__version_file).open(encoding='utf-8') as fd:
++            return json.loads(fd.read())
++    except Exception:
++        return {}
++
++
++def __set_tracked_versions(compat_dir: str, versions: dict) -> None:
++    with Path(compat_dir).joinpath(__version_file).open('w', encoding='utf-8') as fd:
++        fd.write(json.dumps(versions))
++
++
++def __deploy_importer(
++    importer: dict, version: str, libs_version: str, prefix_dir: str
++) -> None:
++    dest = Path(prefix_dir).joinpath(__deploy_root, importer['folder'])
++    dest.mkdir(parents=True, exist_ok=True)
++
++    if 'dlls' not in importer:  # the package ships its own 3dmigoto libs
++        libs_zip = __cached_download(__libs_repo, __libs_asset, libs_version)
++        with zipfile.ZipFile(libs_zip) as zip_fd:
++            for dll in __libs_dlls:
++                with zip_fd.open(dll) as src_fd:
++                    with dest.joinpath(dll).open('wb') as dst_fd:
++                        shutil.copyfileobj(src_fd, dst_fd)
++
++    pkg_zip = __cached_download(importer['repo'], importer['asset'], version)
++    ini = dest.joinpath('d3dx.ini')
++    if ini.is_file():
++        shutil.copy(ini, ini.with_name('d3dx.ini.old'))
++    # Core holds the importer's own ini framework, stale files break updates
++    core = dest.joinpath('Core')
++    if core.is_dir():
++        shutil.rmtree(core)
++    strip = importer.get('strip', '')
++    with zipfile.ZipFile(pkg_zip) as zip_fd:
++        for info in zip_fd.infolist():
++            if strip:
++                if not info.filename.startswith(strip) or info.filename == strip:
++                    continue
++                info.filename = info.filename[len(strip):]
++            if info.filename in importer.get('exclude', ()):
++                continue
++            # never clobber user content
++            if info.filename.startswith('Mods/') and dest.joinpath(info.filename).exists():
++                continue
++            zip_fd.extract(info, dest)
++    # not all packages ship an empty Mods folder
++    if not dest.joinpath('Mods').is_symlink():
++        dest.joinpath('Mods').mkdir(exist_ok=True)
++
++
++# Mods live outside the prefix so they survive prefix deletion and are
++# reachable without digging through compatdata. PROTON_XXMI_MODS_PATH
++# overrides the location, =0 keeps a plain folder inside the prefix.
++def __setup_mods_dir(dest: Path, env: dict) -> Path:
++    mods = dest.joinpath('Mods')
++    custom = env.get('PROTON_XXMI_MODS_PATH', '')
++    if custom == '0':
++        if mods.is_symlink():
++            old = mods.readlink()
++            mods.unlink()
++            log.info(f'Previously symlinked mods remain in "{old}"')
++        mods.mkdir(parents=True, exist_ok=True)
++        return mods
++    if custom:
++        target = Path(custom).expanduser()
++    else:
++        data_home = env.get('XDG_DATA_HOME', '') or Path.home().joinpath('.local', 'share')
++        target = Path(data_home).joinpath('xxmi', dest.name, 'Mods')
++    target.mkdir(parents=True, exist_ok=True)
++    if mods.is_symlink():
++        if mods.readlink() != target:
++            mods.unlink()
++    elif mods.is_dir():
++        # migrate prefix mods, collisions stay behind and win over the symlink
++        for entry in mods.iterdir():
++            if not target.joinpath(entry.name).exists():
++                shutil.move(entry, target)
++        try:
++            mods.rmdir()
++        except OSError:
++            log.warn(f'Mods left in "{mods}" already exist in "{target}", keeping the prefix folder')
++            return mods
++    if not mods.exists():
++        dest.mkdir(parents=True, exist_ok=True)
++        mods.symlink_to(target)
++    return target
++
++
++# d3dx.ini toggles mirroring the XXMI Launcher settings; unset variables
++# enforce the launcher defaults (warnings muted, everything else off)
++__ini_toggles = (
++    # env var, default, section, key, on value, off value
++    ('PROTON_XXMI_HUNTING', '0', 'Hunting', 'hunting', '2', '0'),
++    ('PROTON_XXMI_DUMP_SHADERS', '0', 'Hunting', 'marking_actions', 'clipboard hlsl asm regex', 'clipboard'),
++    ('PROTON_XXMI_MUTE_WARNINGS', '1', 'Logging', 'show_warnings', '0', '1'),
++    ('PROTON_XXMI_CALLS_LOGGING', '0', 'Logging', 'calls', '1', '0'),
++    ('PROTON_XXMI_DEBUG_LOGGING', '0', 'Logging', 'debug', '1', '0'),
++)
++
++
++def __apply_ini_settings(ini: Path, settings: dict) -> bool:
++    """settings: {(section, key): value}, matched case-insensitively"""
++    with ini.open(encoding='utf-8', newline='') as fd:
++        lines = fd.readlines()
++    pending = {(s.lower(), k.lower()): (s, k, v) for (s, k), v in settings.items()}
++    headers = {}
++    section = ''
++    modified = False
++    for i, line in enumerate(lines):
++        text = line.strip()
++        if text.startswith('[') and text.endswith(']'):
++            section = text[1:-1].lower()
++            headers.setdefault(section, i)
++            continue
++        key, sep, value = text.partition('=')
++        if not sep or text.startswith(';'):
++            continue
++        entry = pending.pop((section, key.strip().lower()), None)
++        if entry is None:
++            continue
++        if value.strip() != entry[2]:
++            lines[i] = f'{entry[1]} = {entry[2]}' + ('\r\n' if line.endswith('\r\n') else '\n')
++            modified = True
++    # missing keys go right below their section header, last section first
++    # so the insertions don't shift the remaining header offsets
++    for section, key, value in sorted(
++        pending.values(), key=lambda entry: -headers.get(entry[0].lower(), 0)
++    ):
++        i = headers.get(section.lower())
++        if i is None:
++            continue
++        lines.insert(i + 1, f'{key} = {value}' + ('\r\n' if lines[i].endswith('\r\n') else '\n'))
++        modified = True
++    if modified:
++        with ini.open('w', encoding='utf-8', newline='') as fd:
++            fd.writelines(lines)
++    return modified
++
++
++def __configure_importer(dest: Path, env: dict, default_delay: str) -> None:
++    settings = {
++        (section, key): on if env.get(var, default) not in {'', '0'} else off
++        for var, default, section, key, on, off in __ini_toggles
++    }
++    delay = env.get('PROTON_XXMI_DELAY', '')
++    if delay and not delay.isdigit():
++        log.warn(f'Ignoring non-numeric PROTON_XXMI_DELAY "{delay}"')
++        delay = ''
++    settings[('System', 'dll_initialization_delay')] = delay or default_delay
++    if __apply_ini_settings(dest.joinpath('d3dx.ini'), settings):
++        log.info('Updated d3dx.ini settings')
++
++
++def setup_xxmi(compat_config: set, env: dict, compat_dir: str, prefix_dir: str, cmdline: list = None) -> None:
++    """usage: setup_xxmi(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir, g_session.cmdlineappend)"""
++    exe = Path(sys.argv[2]) if len(sys.argv) > 2 else None
++    enabled = [name for name in __importers if name in compat_config]
++    env_var = None
++    if not enabled and 'xxmi' in compat_config:
++        detected = __exe_importers.get(exe.name.lower()) if exe else None
++        if not detected and exe:
++            found = __find_game_importers(exe.parent)
++            if len(found) > 1:
++                names = ', '.join(sorted(found)).upper()
++                log.warn(f'PROTON_USE_XXMI: multiple games found ({names}), set the game\'s own variable instead')
++                return
++            if found:
++                detected = found.pop()
++                log.info(f'PROTON_USE_XXMI: detected {detected.upper()} from a game folder below the launcher')
++        if not detected:
++            log.warn(f'PROTON_USE_XXMI: no model importer known for "{exe.name if exe else ""}"')
++            return
++        enabled = [detected]
++        env_var = 'PROTON_USE_XXMI'
++    if not enabled:
++        return
++    name = enabled[0]
++    if len(enabled) > 1:
++        log.warn(f'Multiple XXMI importers requested, using "{name.upper()}"')
++    importer = __importers[name]
++    dest = Path(prefix_dir).joinpath(__deploy_root, importer['folder'])
++
++    mods = dest.joinpath('Mods')
++    try:
++        mods = __setup_mods_dir(dest, env)
++    except Exception as e:
++        log.warn('Failed to set up the mods folder')
++        log.warn(e)
++
++    own_libs = 'dlls' in importer
++    versions = __get_tracked_versions(compat_dir)
++    pin = env.get(env_var or importer['env_var'], '1')
++    libs_pin = env.get('PROTON_XXMI_LIBS', '1')
++    try:
++        target = pin if pin not in {'0', '1'} else __get_latest_version(importer['repo'])
++        if own_libs:
++            target_libs = None
++        else:
++            target_libs = libs_pin if libs_pin not in {'0', '1'} else __get_latest_version(__libs_repo)
++    except Exception as e:
++        log.warn(f'Failed to query {name.upper()} release versions, using deployed files')
++        log.warn(e)
++        target = versions.get(name)
++        target_libs = None if own_libs else versions.get('xxmi')
++
++    deployed = all(dest.joinpath(f).is_file() for f in ('d3dx.ini', *importer.get('dlls', __libs_dlls)))
++    if (
++        not deployed
++        or target != versions.get(name)
++        or (not own_libs and target_libs != versions.get('xxmi'))
++    ):
++        if not target or (not own_libs and not target_libs):
++            log.crit(f'Cannot deploy {name.upper()}: no version available')
++            return
++        libs_note = '' if own_libs else f' (XXMI libs v{target_libs})'
++        log.info(f'Deploying {name.upper()} v{target}{libs_note}')
++        try:
++            __deploy_importer(importer, target, target_libs, prefix_dir)
++        except Exception as e:
++            log.crit(f'Failed to deploy {name.upper()}')
++            log.crit(e)
++            return
++        versions[name] = target
++        if not own_libs:
++            versions['xxmi'] = target_libs
++        __set_tracked_versions(compat_dir, versions)
++
++    if not importer.get('stock_ini'):
++        try:
++            __configure_importer(dest, env, importer.get('delay', '0'))
++        except Exception as e:
++            log.warn('Failed to update d3dx.ini settings')
++            log.warn(e)
++
++    env['WINE_XXMI_PATH'] = 'C:\\xxmi\\' + importer['folder']
++    log.info(f'{name.upper()} enabled, mods folder: {mods}')
++
++    # only the game itself understands the renderer argument, not its launcher
++    arg = importer.get('arg')
++    if (
++        arg
++        and cmdline is not None
++        and exe
++        and __exe_importers.get(exe.name.lower()) == name
++        and arg not in sys.argv
++        and arg not in cmdline
++    ):
++        cmdline.append(arg)
++        log.info(f'Appending "{arg}" to force the D3D11 renderer')
+-- 
+2.51.0
+

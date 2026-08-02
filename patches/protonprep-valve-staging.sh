@@ -327,6 +327,9 @@ apply_all_in_dir() {
 
 ### (2-8) PROTON-ANIME CUSTOM PATCHES ###
 
+    echo "WINE: -PROTON-ANIME- HACK: kernelbase d3d11 redirect for XXMI model importers"
+    apply_patch "../patches/proton/0002-HACK-kernelbase-redirect-d3d11-for-XXMI-model-importers.patch"
+
     # HSR hacks ported from https://repo.tukandev.com/TTL-extras/sparkle
     echo "WINE: -PROTON-ANIME- HACK: HSR wintrust catalog stub + first-request block (StarRail.exe)"
     echo "WINE: -PROTON-ANIME- HACK: NTE hide-launcher mode (PROTON_NTE_HIDE_LAUNCHER=1)"
