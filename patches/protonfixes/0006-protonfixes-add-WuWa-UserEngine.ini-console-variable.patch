@@ -1,0 +1,71 @@
+From 4e8771504e7dc141b8df4f5a24862828b42909fc Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 1 Aug 2026 21:01:52 +0200
+Subject: [PATCH] protonfixes: add WuWa UserEngine.ini console variable support
+
+---
+ gamefixes-steam/3513350.py | 41 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/gamefixes-steam/3513350.py b/gamefixes-steam/3513350.py
+index 37daf3f..ee72abb 100644
+--- a/gamefixes-steam/3513350.py
++++ b/gamefixes-steam/3513350.py
+@@ -5,6 +5,7 @@ https://www.protondb.com/app/3513350
+ import os
+ import shutil
+ import sys
++from pathlib import Path
+ 
+ from protonfixes import util
+ from protonfixes.logger import log
+@@ -33,6 +34,46 @@ def main() -> None:
+ 
+     _fix_kuro_launcher()
+ 
++    try:
++        _write_engine_ini()
++    except Exception as e:
++        log.warn('Failed to write the UserEngine.ini settings')
++        log.warn(e)
++
++
++def _find_game_root():
++    if len(sys.argv) < 3:
++        return None
++    path = Path(sys.argv[2]).parent
++    for folder in (path, *path.parents):
++        for root in (folder, folder.joinpath('Wuthering Waves Game')):
++            if root.joinpath('Client').is_dir() and root.joinpath('Engine').is_dir():
++                return root
++    return None
++
++
++def _write_engine_ini() -> None:
++    lines = []
++    for entry in os.environ.get('PROTON_WUWA_ENGINE_VARS', '').split(','):
++        if not entry.strip():
++            continue
++        key, sep, value = entry.partition('=')
++        if not sep or not key.strip():
++            log.warn(f'Ignoring malformed PROTON_WUWA_ENGINE_VARS entry "{entry.strip()}"')
++            continue
++        lines.append(f'{key.strip()}={value.strip()}\n')
++    if not lines:
++        return
++    root = _find_game_root()
++    if not root:
++        log.warn('Could not locate the Wuthering Waves game folder, skipping UserEngine.ini setup')
++        return
++    ini = root.joinpath('Client', 'Config', 'UserEngine.ini')
++    ini.parent.mkdir(parents=True, exist_ok=True)
++    with ini.open('w', encoding='utf-8') as fd:
++        fd.writelines(['[ConsoleVariables]\n', *lines])
++    log.info(f'Wrote engine settings to "{ini}"')
++
+ 
+ def _fix_kuro_launcher() -> None:
+     """Fix the standalone launcher rendering a blank window"""
+-- 
+2.51.0
+
