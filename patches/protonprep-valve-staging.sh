@@ -337,6 +337,14 @@ apply_all_in_dir() {
         apply_patch "$patch"
     done
 
+### (2-8) PROTON-ANIME CUSTOM PATCHES ###
+
+    # HSR hacks ported from https://repo.tukandev.com/TTL-extras/sparkle
+    echo "WINE: -PROTON-ANIME- HACK: HSR wintrust catalog stub + first-request block (StarRail.exe)"
+    apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
+
+### END PROTON-ANIME CUSTOM PATCHES ###
+
     echo "WINE: RUN AUTOCONF TOOLS/MAKE_REQUESTS"
     autoreconf -f
     ./tools/make_requests
