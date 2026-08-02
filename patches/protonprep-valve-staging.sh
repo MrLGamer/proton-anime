@@ -35,6 +35,7 @@ apply_all_in_dir() {
     git reset --hard HEAD
     git clean -xdf
     echo "PROTONFIXES: add optiscaler support"
+    echo "PROTONFIXES: -PROTON-ANIME- WuWa launcher fix"
     apply_all_in_dir "../patches/protonfixes/"
     popd
 

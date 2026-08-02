@@ -1,0 +1,82 @@
+From 50dfc1f016c014a0d0f0e2bcf842daf441c7a79a Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 17 Jul 2026 22:15:12 +0200
+Subject: [PATCH] protonfixes: Fix blank Wuthering Waves launcher
+ (launcher.exe).
+
+The launcher's WPF window sets `AllowsTransparency=True` in the BAML of
+`launcher_main.dll`, hitting a WebView2 rendering bug under Wine.
+Byte-patch the BAML with same-length records and run `msedgewebview2.exe`
+as win7. A `.bak` is kept, the patch re-applies after launcher updates.
+---
+ gamefixes-steam/3513350.py | 49 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/gamefixes-steam/3513350.py b/gamefixes-steam/3513350.py
+index 0a7b5de..be3cf4c 100644
+--- a/gamefixes-steam/3513350.py
++++ b/gamefixes-steam/3513350.py
+@@ -2,7 +2,22 @@
+ https://www.protondb.com/app/3513350
+ """
+ 
++import os
++import shutil
++import sys
++
+ from protonfixes import util
++from protonfixes.logger import log
++
++# AllowsTransparency=True in the launcher's BAML breaks WebView2 under Wine,
++# swap it for a same-length no-op.
++# Without transparency the MainWindow's drop-shadow margin renders opaque
++# black, so also shrink the 1307x784 window to its 1280x760 webview.
++BAML_PATCHES = [
++    (b'\x12AllowsTransparency', b'\x09IsEnabled\x1bA\x00\x03AAAAA'),
++    (b'\x24\x09\xd1\xff\x03784', b'\x24\x09\xd1\xff\x03760'),
++    (b'\x24\x0a\xc7\xff\x041307', b'\x24\x0a\xc7\xff\x041280'),
++]
+ 
+ 
+ def main() -> None:
+@@ -15,3 +30,37 @@ def main() -> None:
+     """Unsetting them to also prevent issues on Steam Decks where they are set by default."""
+     util.del_environment('SteamOS')
+     util.del_environment('SteamDeck')
++
++    _fix_kuro_launcher()
++
++
++def _fix_kuro_launcher() -> None:
++    """Fix the standalone launcher rendering a blank window"""
++    if len(sys.argv) < 3 or os.path.basename(sys.argv[2]) != 'launcher.exe':
++        return
++
++    # WebView2 only renders as win7
++    util.regedit_add(
++        'HKCU\\Software\\Wine\\AppDefaults\\msedgewebview2.exe',
++        'Version',
++        'REG_SZ',
++        'win7',
++    )
++
++    exe_dir = os.path.dirname(sys.argv[2])
++    for entry in sorted(os.listdir(exe_dir)):
++        dll = os.path.join(exe_dir, entry, 'launcher_main.dll')
++        if not os.path.isfile(dll):
++            continue
++        with open(dll, 'rb') as f:
++            data = f.read()
++        patched = data
++        for old, new in BAML_PATCHES:
++            patched = patched.replace(old, new)
++        if patched == data:
++            continue
++        if not os.path.isfile(dll + '.bak'):
++            shutil.copy2(dll, dll + '.bak')
++        with open(dll, 'wb') as f:
++            f.write(patched)
++        log.info(f'Patched launcher BAML in {dll}')
+-- 
+2.51.0
+
