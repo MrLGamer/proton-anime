@@ -1,0 +1,60 @@
+From daed087f090c0d84fbafded9625708d39847f272 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 10 Jul 2026 12:00:00 +0200
+Subject: [PATCH] HACK: shell32: suppress the NTE launcher tray icon
+
+With this, Shell_NotifyIconW pretends to succeed for
+NTEGlobalGame.exe so no tray icon appears.
+---
+ dlls/shell32/systray.c | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/dlls/shell32/systray.c b/dlls/shell32/systray.c
+--- a/dlls/shell32/systray.c
++++ b/dlls/shell32/systray.c
+@@ -66,6 +66,29 @@
+ };
+ 
+ 
++/* HACK: PROTON_NTE_HIDE_LAUNCHER=1: no tray icon for the NTE launcher
++ * (NTEGlobalGame.exe). Its windows must stay visible: they overlay the
++ * in-game login page. */
++static BOOL nte_launcher_hidden(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        WCHAR path[MAX_PATH], *p, *name = path;
++        char buf[4];
++
++        cached = 0;
++        if (GetEnvironmentVariableA( "PROTON_NTE_HIDE_LAUNCHER", buf, sizeof(buf) ) && buf[0] == '1'
++            && GetModuleFileNameW( NULL, path, MAX_PATH ))
++        {
++            for (p = path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++            if (!lstrcmpiW( name, L"NTEGlobalGame.exe" )) cached = 1;
++        }
++    }
++    return cached;
++}
++
+ /*************************************************************************
+  * Shell_NotifyIcon			[SHELL32.296]
+  * Shell_NotifyIconA			[SHELL32.297]
+@@ -189,6 +214,12 @@
+ 
+     TRACE("dwMessage = %ld, nid->cbSize=%ld\n", dwMessage, nid->cbSize);
+ 
++    if (nte_launcher_hidden())
++    {
++        FIXME("HACK: suppressing tray icon for NTE launcher.\n");
++        return TRUE;
++    }
++
+     /* Validate the cbSize so that WM_COPYDATA doesn't crash the application */
+     if (nid->cbSize != NOTIFYICONDATAW_V1_SIZE &&
+         nid->cbSize != NOTIFYICONDATAW_V2_SIZE &&
+-- 
+2.51.0
+
