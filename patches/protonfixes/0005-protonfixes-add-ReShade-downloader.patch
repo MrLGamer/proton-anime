@@ -1,0 +1,301 @@
+From c15eb170dbfdf6bfb2b99881692c5651db85d975 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 25 Jul 2026 01:37:13 +0200
+Subject: [PATCH] protonfixes: add ReShade downloader
+
+ReShade is extracted from the official setup exe and deployed into
+`drive_c/reshade/`, i.e.
+
+```
+PROTON_USE_RESHADE=1 %command%
+```
+
+Setting a version number instead of `1` pins the release and
+`PROTON_RESHADE_ADDON=1` gets the full add-on variant, which skips the
+network-activity add-on lockout.
+
+Shaders, textures and presets are host-side in `$XDG_DATA_HOME/reshade` and
+symlinked into the prefix (`PROTON_RESHADE_PATH` overrides the location, `=0`
+opts out), the standard effect pack is installed on first use. The overlay
+opens with the Home key. Without an XXMI importer ReShade takes the dxgi
+slot, so it can't be combined with OptiScaler; with one it gets injected
+next to 3dmigoto instead.
+---
+ __init__.py |   2 +
+ reshade.py  | 244 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 246 insertions(+)
+ create mode 100644 reshade.py
+
+diff --git a/__init__.py b/__init__.py
+index e7a990d..fddce46 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -9,6 +9,7 @@ from . import fix
+ from .logger import log
+ from .upscalers import setup_upscalers
+ from .xxmi import setup_xxmi
++from .reshade import setup_reshade
+ from .utilities import (
+     setup_frame_rate,
+     setup_local_shader_cache,
+@@ -118,6 +119,7 @@ __all__ = [
+     'setup_frame_rate',
+     'setup_local_shader_cache',
+     'setup_mount_drives',
++    'setup_reshade',
+     'setup_upscalers',
+     'setup_xxmi',
+     'winetricks',
+diff --git a/reshade.py b/reshade.py
+new file mode 100644
+index 0000000..9a159e8
+--- /dev/null
++++ b/reshade.py
+@@ -0,0 +1,244 @@
++"""Download and deploy ReShade into the wine prefix"""
++
++import re
++import shutil
++import urllib.request
++import zipfile
++from pathlib import Path
++
++from .logger import log
++from .config import config
++from .xxmi import (
++    __cached_download as cached_download,
++    __get_latest_version as get_latest_version,
++    __get_tracked_versions as get_tracked_versions,
++    __set_tracked_versions as set_tracked_versions,
++    __libs_repo as libs_repo,
++    __libs_asset as libs_asset,
++)
++
++__deploy_root = 'drive_c/reshade'
++__dlls = ('ReShade64.dll', 'dxgi.dll', 'd3dcompiler_47.dll')
++__data_dirs = ('Shaders', 'Textures', 'Presets')
++__shaders_url = 'https://github.com/crosire/reshade-shaders/archive/refs/heads/slim.zip'
++
++__ini_template = """[GENERAL]
++EffectSearchPaths=C:\\reshade\\Shaders\\**
++TextureSearchPaths=C:\\reshade\\Textures\\**
++PresetPath=C:\\reshade\\Presets\\ReShadePreset.ini
++IntermediateCachePath=C:\\reshade\\Cache
++"""
++
++
++def __get_latest_reshade() -> str:
++    req = urllib.request.Request('https://reshade.me/', headers={'User-Agent': 'Mozilla/5.0'})
++    with urllib.request.urlopen(req, timeout=10) as url_fd:
++        page = url_fd.read().decode('utf-8', 'replace')
++    # the plain (non-Addon) setup, its dlls are the standard variant
++    match = re.search(r'/downloads/ReShade_Setup_([0-9.]+)\.exe', page)
++    if not match:
++        raise LookupError('No ReShade setup download link found')
++    return match.group(1)
++
++
++def __cached_url_download(url: str, filename: str) -> Path:
++    cache_dir = config.path.cache_dir.joinpath('reshade')
++    cache_dir.mkdir(parents=True, exist_ok=True)
++    cached_file = cache_dir.joinpath(filename)
++    if cached_file.is_file() and zipfile.is_zipfile(cached_file):
++        return cached_file
++    log.info(f'Downloading "{url}"')
++    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
++    tmp_file = cached_file.with_suffix('.tmp')
++    with urllib.request.urlopen(req, timeout=10) as url_fd:
++        with tmp_file.open('wb') as tmp_fd:
++            shutil.copyfileobj(url_fd, tmp_fd)
++    tmp_file.rename(cached_file)
++    return cached_file
++
++
++def __deploy_reshade(target: str, dest: Path) -> None:
++    dest.mkdir(parents=True, exist_ok=True)
++    # the setup exe doubles as a zip archive holding the dlls
++    version, _, variant = target.partition('-')
++    exe_name = f'ReShade_Setup_{version}{"_Addon" if variant else ""}.exe'
++    setup_exe = __cached_url_download(f'https://reshade.me/downloads/{exe_name}', exe_name)
++    with zipfile.ZipFile(setup_exe) as zip_fd:
++        with zip_fd.open('ReShade64.dll') as src_fd:
++            with dest.joinpath('ReShade64.dll').open('wb') as dst_fd:
++                shutil.copyfileobj(src_fd, dst_fd)
++    # loaded under the dxgi.dll name, the kernelbase redirect resolves to it
++    shutil.copy(dest.joinpath('ReShade64.dll'), dest.joinpath('dxgi.dll'))
++    if not dest.joinpath('d3dcompiler_47.dll').is_file():
++        libs_zip = cached_download(libs_repo, libs_asset, get_latest_version(libs_repo))
++        with zipfile.ZipFile(libs_zip) as zip_fd:
++            with zip_fd.open('d3dcompiler_47.dll') as src_fd:
++                with dest.joinpath('d3dcompiler_47.dll').open('wb') as dst_fd:
++                    shutil.copyfileobj(src_fd, dst_fd)
++
++
++def __remove_ini_keys(ini: Path, keys: set) -> bool:
++    """keys: {(section, key)} lowercase, drops active assignments only"""
++    with ini.open(encoding='utf-8', newline='') as fd:
++        lines = fd.readlines()
++    section = ''
++    kept = []
++    modified = False
++    for line in lines:
++        text = line.strip()
++        if text.startswith('[') and text.endswith(']'):
++            section = text[1:-1].lower()
++        elif not text.startswith(';'):
++            key, sep, _ = text.partition('=')
++            if sep and (section, key.strip().lower()) in keys:
++                modified = True
++                continue
++        kept.append(line)
++    if modified:
++        with ini.open('w', encoding='utf-8', newline='') as fd:
++            fd.writelines(kept)
++    return modified
++
++
++def __link_data_dir(link: Path, target: Path) -> None:
++    target.mkdir(parents=True, exist_ok=True)
++    if link.is_symlink():
++        if link.readlink() != target:
++            link.unlink()
++    elif link.is_dir():
++        # migrate prefix files, collisions stay behind and win over the symlink
++        for entry in link.iterdir():
++            if not target.joinpath(entry.name).exists():
++                shutil.move(entry, target)
++        try:
++            link.rmdir()
++        except OSError:
++            log.warn(f'Files left in "{link}" already exist in "{target}", keeping the prefix folder')
++            return
++    if not link.exists():
++        link.symlink_to(target)
++
++
++# Shaders, textures and presets live outside the prefix so they survive
++# prefix deletion and are shared between games. PROTON_RESHADE_PATH
++# overrides the location, =0 keeps plain folders inside the prefix.
++def __setup_data_dirs(dest: Path, env: dict) -> Path:
++    custom = env.get('PROTON_RESHADE_PATH', '')
++    if custom == '0':
++        for name in __data_dirs:
++            link = dest.joinpath(name)
++            if link.is_symlink():
++                old = link.readlink()
++                link.unlink()
++                log.info(f'Previously symlinked ReShade files remain in "{old}"')
++            link.mkdir(parents=True, exist_ok=True)
++        return dest
++    if custom:
++        root = Path(custom).expanduser()
++    else:
++        data_home = env.get('XDG_DATA_HOME', '') or Path.home().joinpath('.local', 'share')
++        root = Path(data_home).joinpath('reshade')
++    for name in __data_dirs:
++        __link_data_dir(dest.joinpath(name), root.joinpath(name))
++    return root
++
++
++def __install_default_effects(root: Path) -> None:
++    shaders = root.joinpath('Shaders')
++    if shaders.is_dir() and any(shaders.iterdir()):
++        return
++    effects_zip = __cached_url_download(__shaders_url, 'reshade-shaders-slim.zip')
++    with zipfile.ZipFile(effects_zip) as zip_fd:
++        for info in zip_fd.infolist():
++            parts = Path(info.filename).parts
++            if info.is_dir() or len(parts) < 3 or parts[1] not in ('Shaders', 'Textures'):
++                continue
++            target = root.joinpath(*parts[1:])
++            target.parent.mkdir(parents=True, exist_ok=True)
++            with zip_fd.open(info) as src_fd:
++                with target.open('wb') as dst_fd:
++                    shutil.copyfileobj(src_fd, dst_fd)
++    log.info('Installed the standard ReShade effect pack')
++
++
++def __write_ini(dest: Path) -> None:
++    ini = dest.joinpath('ReShade.ini')
++    if ini.is_file():
++        return
++    with ini.open('w', encoding='utf-8', newline='') as fd:
++        fd.write(__ini_template.replace('\n', '\r\n'))
++
++
++def setup_reshade(compat_config: set, env: dict, compat_dir: str, prefix_dir: str) -> None:
++    """usage: setup_reshade(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)"""
++    # scrub proxy_d3d11 leftovers from an earlier ReShade chaining approach
++    # (crashed Unity games; kernelbase loads ReShade instead)
++    xxmi_path = env.get('WINE_XXMI_PATH', '')
++    if xxmi_path:
++        folder = xxmi_path.rstrip('\\').rsplit('\\', 1)[-1]
++        d3dx = Path(prefix_dir).joinpath('drive_c', 'xxmi', folder, 'd3dx.ini')
++        try:
++            if d3dx.is_file() and __remove_ini_keys(d3dx, {('system', 'proxy_d3d11')}):
++                log.info('Removed the stale ReShade proxy from d3dx.ini')
++        except Exception as e:
++            log.warn('Failed to clean up d3dx.ini')
++            log.warn(e)
++
++    if 'reshade' not in compat_config:
++        return
++    # without an importer to co-inject from, ReShade needs the dxgi slot
++    if not xxmi_path and 'optiscaler' in compat_config:
++        log.warn('PROTON_USE_RESHADE: OptiScaler already occupies dxgi.dll, disable it to use ReShade')
++        return
++
++    dest = Path(prefix_dir).joinpath(__deploy_root)
++    versions = get_tracked_versions(compat_dir)
++    pin = env.get('PROTON_USE_RESHADE', '1')
++    # the add-on variant skips the network-activity add-on lockout
++    addon = env.get('PROTON_RESHADE_ADDON', '') not in {'', '0'}
++    try:
++        target = pin if pin not in {'0', '1'} else __get_latest_reshade()
++        if addon:
++            target += '-addon'
++    except Exception as e:
++        log.warn('Failed to query the latest ReShade version, using deployed files')
++        log.warn(e)
++        target = versions.get('reshade')
++
++    deployed = all(dest.joinpath(dll).is_file() for dll in __dlls)
++    if not deployed or target != versions.get('reshade'):
++        if not target:
++            log.crit('Cannot deploy ReShade: no version available')
++            return
++        log.info(f'Deploying ReShade v{target}')
++        try:
++            __deploy_reshade(target, dest)
++        except Exception as e:
++            log.crit('Failed to deploy ReShade')
++            log.crit(e)
++            return
++        versions['reshade'] = target
++        set_tracked_versions(compat_dir, versions)
++
++    try:
++        __write_ini(dest)
++        dest.joinpath('Cache').mkdir(exist_ok=True)
++    except Exception as e:
++        log.warn('Failed to write ReShade.ini')
++        log.warn(e)
++
++    root = dest
++    try:
++        root = __setup_data_dirs(dest, env)
++        __install_default_effects(root)
++    except Exception as e:
++        log.warn('Failed to set up the ReShade data folders')
++        log.warn(e)
++
++    # co-injected under its original file name, ReShade skips initializing
++    # unless this is set, and bases its config in the game folder instead
++    # of the module folder
++    env['RESHADE_DISABLE_LOADING_CHECK'] = '1'
++    env['RESHADE_BASE_PATH_OVERRIDE'] = 'C:\\reshade'
++    env['WINE_RESHADE_PATH'] = 'C:\\reshade'
++    log.info(f'ReShade enabled, shaders and presets folder: {root}')
+-- 
+2.51.0
+
