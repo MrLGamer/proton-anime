@@ -1,0 +1,74 @@
+From f3dea6fd101ef0c527db21bb6f37823da492d830 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Wed, 8 Jul 2026 21:00:00 +0200
+Subject: [PATCH] HACK: wintrust: stub catalog signature checks for Honkai:
+ Star Rail
+
+The game's integrity check enumerates catalog signatures for system
+files, which wine's wintrust cannot satisfy and crashes on startup.
+This short-circuits the three catalog helpers when the host process is
+StarRail.exe. Ported from sparkle.
+---
+ dlls/wintrust/crypt.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/dlls/wintrust/crypt.c b/dlls/wintrust/crypt.c
+index ad6f264..ed903fa 100644
+--- a/dlls/wintrust/crypt.c
++++ b/dlls/wintrust/crypt.c
+@@ -460,6 +460,18 @@ BOOL WINAPI CryptCATAdminCalcHashFromFileHandle2(HCATADMIN catAdmin, HANDLE hFil
+ }
+ 
+ 
++/* HACK: hkrpg's integrity check enumerates catalog signatures, which wine
++ * cannot satisfy; pretend system files are catalog-signed for StarRail.exe. */
++static BOOL is_honkai_starrail(void)
++{
++    static const WCHAR exeW[] = {'S','t','a','r','R','a','i','l','.','e','x','e',0};
++    WCHAR path[MAX_PATH], *p, *name = path;
++
++    if (!GetModuleFileNameW(NULL, path, MAX_PATH)) return FALSE;
++    for (p = path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    return !lstrcmpiW(name, exeW);
++}
++
+ /***********************************************************************
+  *             CryptCATAdminEnumCatalogFromHash (WINTRUST.@)
+  */
+@@ -479,6 +493,9 @@ HCATINFO WINAPI CryptCATAdminEnumCatalogFromHash(HCATADMIN hCatAdmin, BYTE* pbHa
+ 
+     TRACE("%p %p %ld %lx %p\n", hCatAdmin, pbHash, cbHash, dwFlags, phPrevCatInfo);
+ 
++    /* HACK: pretend a matching catalog was found (fake non-NULL handle). */
++    if (is_honkai_starrail()) return (HCATINFO)(ULONG_PTR)1;
++
+     if (!ca || ca->magic != CATADMIN_MAGIC || !pbHash || cbHash != 20 || dwFlags)
+     {
+         SetLastError(ERROR_INVALID_PARAMETER);
+@@ -604,6 +621,9 @@ BOOL WINAPI CryptCATAdminReleaseCatalogContext(HCATADMIN hCatAdmin,
+ 
+     TRACE("%p %p %lx\n", hCatAdmin, hCatInfo, dwFlags);
+ 
++    /* HACK: our fake handle from EnumCatalogFromHash owns no memory, just succeed. */
++    if (is_honkai_starrail()) return TRUE;
++
+     if (!ca || ca->magic != CATADMIN_MAGIC || !ci || ci->magic != CATINFO_MAGIC)
+     {
+         SetLastError(ERROR_INVALID_PARAMETER);
+@@ -1026,6 +1046,13 @@ BOOL WINAPI CryptCATCatalogInfoFromContext(HCATINFO hcatinfo, CATALOG_INFO *info
+ 
+     TRACE("%p, %p, %lx\n", hcatinfo, info, flags);
+ 
++    /* HACK: report success without touching the (fake) context handle. */
++    if (is_honkai_starrail() && info && info->cbStruct == sizeof(*info) && !flags)
++    {
++        info->wszCatalogFile[0] = 0;
++        return TRUE;
++    }
++
+     if (!hcatinfo || hcatinfo == INVALID_HANDLE_VALUE || ci->magic != CATINFO_MAGIC ||
+         flags || !info || info->cbStruct != sizeof(*info))
+     {
+-- 
+2.51.0
+
