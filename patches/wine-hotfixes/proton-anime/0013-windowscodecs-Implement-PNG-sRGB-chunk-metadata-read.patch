@@ -1,0 +1,174 @@
+From 357d6142c22ffadf358022d892b0f983f44c6f1a Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Wed, 22 Jul 2026 17:31:20 +0200
+Subject: [PATCH] windowscodecs: Implement PNG sRGB chunk metadata reader
+
+Windows WIC exposes the sRGB chunk as /sRGB/RenderingIntent; DirectXTex
+relies on it to pick _SRGB texture formats for PNGs.
+---
+ dlls/windowscodecs/clsfactory.c        |  1 +
+ dlls/windowscodecs/pngformat.c         | 79 ++++++++++++++++++++++++++
+ dlls/windowscodecs/regsvr.c            | 25 ++++++++
+ dlls/windowscodecs/wincodecs_private.h |  1 +
+ 4 files changed, 106 insertions(+)
+
+diff --git a/dlls/windowscodecs/clsfactory.c b/dlls/windowscodecs/clsfactory.c
+index e7cde87..4da8112 100644
+--- a/dlls/windowscodecs/clsfactory.c
++++ b/dlls/windowscodecs/clsfactory.c
+@@ -75,6 +75,7 @@ static const classinfo wic_classes[] = {
+     {&CLSID_WICPngChrmMetadataReader, PngChrmReader_CreateInstance},
+     {&CLSID_WICPngGamaMetadataReader, PngGamaReader_CreateInstance},
+     {&CLSID_WICPngHistMetadataReader, PngHistReader_CreateInstance},
++    {&CLSID_WICPngSrgbMetadataReader, PngSrgbReader_CreateInstance},
+     {&CLSID_WICPngTextMetadataReader, PngTextReader_CreateInstance},
+     {&CLSID_WICPngTimeMetadataReader, PngTimeReader_CreateInstance},
+     {&CLSID_WICPngTimeMetadataWriter, PngTimeWriter_CreateInstance},
+diff --git a/dlls/windowscodecs/pngformat.c b/dlls/windowscodecs/pngformat.c
+index 4e46778..c780f7c 100644
+--- a/dlls/windowscodecs/pngformat.c
++++ b/dlls/windowscodecs/pngformat.c
+@@ -191,6 +191,85 @@ HRESULT PngGamaReader_CreateInstance(REFIID iid, void** ppv)
+     return MetadataReader_Create(&GamaReader_Vtbl, iid, ppv);
+ }
+ 
++static HRESULT create_srgb_item(BYTE intent, MetadataItem **item)
++{
++    HRESULT hr;
++
++    if (!(*item = calloc(1, sizeof(**item))))
++        return E_OUTOFMEMORY;
++
++    hr = init_propvar_from_string(L"RenderingIntent", &(*item)->id);
++    if (FAILED(hr))
++    {
++        free(*item);
++        return hr;
++    }
++
++    (*item)->value.vt = VT_UI1;
++    (*item)->value.bVal = intent;
++
++    return S_OK;
++}
++
++static HRESULT LoadSrgbMetadata(MetadataHandler *handler, IStream *stream, const GUID *preferred_vendor,
++    DWORD persist_options)
++{
++    HRESULT hr;
++    BYTE type[4];
++    BYTE *data;
++    ULONG data_size;
++    BYTE intent;
++    MetadataItem *result;
++
++    hr = read_png_chunk(stream, type, &data, &data_size);
++    if (FAILED(hr)) return hr;
++
++    if (data_size < 1)
++    {
++        free(data);
++        return E_FAIL;
++    }
++
++    intent = data[0];
++
++    free(data);
++
++    if (FAILED(hr = create_srgb_item(intent, &result)))
++        return hr;
++
++    MetadataHandler_FreeItems(handler);
++    handler->items = result;
++    handler->item_count = 1;
++
++    return S_OK;
++}
++
++static HRESULT CreateSrgbHandler(MetadataHandler *handler)
++{
++    MetadataItem *item;
++    HRESULT hr;
++
++    if (FAILED(hr = create_srgb_item(0, &item)))
++        return hr;
++
++    handler->items = item;
++    handler->item_count = 1;
++
++    return S_OK;
++}
++
++static const MetadataHandlerVtbl SrgbReader_Vtbl = {
++    0,
++    &CLSID_WICPngSrgbMetadataReader,
++    LoadSrgbMetadata,
++    CreateSrgbHandler,
++};
++
++HRESULT PngSrgbReader_CreateInstance(REFIID iid, void** ppv)
++{
++    return MetadataReader_Create(&SrgbReader_Vtbl, iid, ppv);
++}
++
+ static HRESULT create_chrm_items(const ULONG *values, MetadataItem **ret)
+ {
+     static const WCHAR *names[8] =
+diff --git a/dlls/windowscodecs/regsvr.c b/dlls/windowscodecs/regsvr.c
+index d6c430e..ff9be9b 100644
+--- a/dlls/windowscodecs/regsvr.c
++++ b/dlls/windowscodecs/regsvr.c
+@@ -1802,6 +1802,21 @@ static const struct reader_containers pnghist_containers[] = {
+     { NULL } /* list terminator */
+ };
+ 
++static const BYTE sRGB[] = "sRGB";
++
++static const struct metadata_pattern pngsrgb_metadata_pattern[] = {
++    { 4, 4, sRGB, mask_all, 4 },
++    { 0 }
++};
++
++static const struct reader_containers pngsrgb_containers[] = {
++    {
++        &GUID_ContainerFormatPng,
++        pngsrgb_metadata_pattern
++    },
++    { NULL } /* list terminator */
++};
++
+ static const BYTE tIME[] = "tIME";
+ 
+ static const struct metadata_pattern pngtime_metadata_pattern[] = {
+@@ -1987,6 +2002,16 @@ static struct regsvr_metadatareader const metadatareader_list[] = {
+         0, 0, 0,
+         pnghist_containers
+     },
++    {   &CLSID_WICPngSrgbMetadataReader,
++        "The Wine Project",
++        "Chunk sRGB Reader",
++        "1.0.0.0",
++        "1.0.0.0",
++        &GUID_VendorMicrosoft,
++        &GUID_MetadataFormatChunksRGB,
++        0, 0, 0,
++        pngsrgb_containers
++    },
+     {   &CLSID_WICPngTextMetadataReader,
+         "The Wine Project",
+         "Chunk tEXt Reader",
+diff --git a/dlls/windowscodecs/wincodecs_private.h b/dlls/windowscodecs/wincodecs_private.h
+index d699e10..0d2fe33 100644
+--- a/dlls/windowscodecs/wincodecs_private.h
++++ b/dlls/windowscodecs/wincodecs_private.h
+@@ -264,6 +264,7 @@ extern HRESULT PngBkgdWriter_CreateInstance(REFIID iid, void** ppv);
+ extern HRESULT PngChrmReader_CreateInstance(REFIID iid, void** ppv);
+ extern HRESULT PngGamaReader_CreateInstance(REFIID iid, void** ppv);
+ extern HRESULT PngHistReader_CreateInstance(REFIID iid, void** ppv);
++extern HRESULT PngSrgbReader_CreateInstance(REFIID iid, void** ppv);
+ extern HRESULT PngTextReader_CreateInstance(REFIID iid, void** ppv);
+ extern HRESULT PngTimeReader_CreateInstance(REFIID iid, void** ppv);
+ extern HRESULT PngTimeWriter_CreateInstance(REFIID iid, void** ppv);
+-- 
+2.51.0
+
