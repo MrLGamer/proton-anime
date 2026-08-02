@@ -2263,6 +2263,14 @@ class Session:
         self.check_environment("PROTON_DLSS_INDICATOR", "dlsshud")
         self.check_environment("PROTON_XESS_UPGRADE", "xess")
         self.check_environment("PROTON_USE_OPTISCALER", "optiscaler")
+        self.check_environment("PROTON_USE_XXMI", "xxmi")
+        self.check_environment("PROTON_USE_EFMI", "efmi")
+        self.check_environment("PROTON_USE_WWMI", "wwmi")
+        self.check_environment("PROTON_USE_GIMI", "gimi")
+        self.check_environment("PROTON_USE_SRMI", "srmi")
+        self.check_environment("PROTON_USE_ZZMI", "zzmi")
+        self.check_environment("PROTON_USE_HIMI", "himi")
+        self.check_environment("PROTON_USE_GIMI_DEV", "gimidev")
 
         self.check_environment("PROTON_NATIVE_AGS", "nativeags")
         self.check_environment("PROTON_ENABLE_HDR", "hdr")
@@ -2870,6 +2878,7 @@ if __name__ == "__main__":
     g_session.check_environment("PROTON_XESS_UPGRADE", "xess")
     g_session.check_environment("PROTON_USE_OPTISCALER", "optiscaler")
     protonfixes.setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
+    protonfixes.setup_xxmi(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir, g_session.cmdlineappend)
     # HoYoPlay's CEF GPU process renders the launcher blank (always under the
     # wayland driver, intermittently elsewhere)
     if (len(sys.argv) > 2 and os.path.basename(sys.argv[2]) == "launcher.exe"
