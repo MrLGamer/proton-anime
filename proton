@@ -2796,6 +2796,13 @@ if __name__ == "__main__":
     g_session.check_environment("PROTON_XESS_UPGRADE", "xess")
     g_session.check_environment("PROTON_USE_OPTISCALER", "optiscaler")
     protonfixes.setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
+    # HoYoPlay's CEF GPU process renders the launcher blank (always under the
+    # wayland driver, intermittently elsewhere)
+    if (len(sys.argv) > 2 and os.path.basename(sys.argv[2]) == "launcher.exe"
+            and "HoYoPlay" in sys.argv[2].split(os.sep)
+            and "--in-process-gpu" not in sys.argv
+            and "--in-process-gpu" not in g_session.cmdlineappend):
+        g_session.cmdlineappend.append("--in-process-gpu")
     protonfixes.execute()
 
     g_compatdata.setup_ddraw("PROTON_USE_D7VK" in g_session.env

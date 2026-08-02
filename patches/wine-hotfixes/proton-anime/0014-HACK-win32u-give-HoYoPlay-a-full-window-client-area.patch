@@ -1,0 +1,58 @@
+From 6fac416d104af1df3439cf26ee02f2019b49b204 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 23 Jul 2026 21:00:00 +0200
+Subject: [PATCH] HACK: win32u: give HoYoPlay a full-window client area to kill
+ the white NC frame
+
+HYP.exe removes only the top sizing frame in WM_NCCALCSIZE and relies
+on DWM hiding the rest, which wine paints as a white frame instead.
+Return the full window rect as client area for its top-level windows,
+the launcher does its own edge hit-testing anyway.
+---
+ dlls/win32u/defwnd.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1885,6 +1885,30 @@
+     return TRUE;
+ }
+ 
++/* HACK: HYP.exe relies on DWM hiding the sizing frame it keeps in
++ * WM_NCCALCSIZE; give it a full-window client area instead so wine
++ * paints no white frame (the launcher does its own edge hit-testing). */
++static BOOL is_hoyoplay(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        static const WCHAR hyp_exeW[] = {'h','y','p','.','e','x','e',0};
++        const WCHAR *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer, *p;
++        WCHAR buffer[16];
++        unsigned int i;
++
++        if ((p = wcsrchr( name, '\\' ))) name = p + 1;
++        if ((p = wcsrchr( name, '/' ))) name = p + 1;
++        for (i = 0; i < ARRAY_SIZE(buffer) - 1 && name[i]; i++)
++            buffer[i] = RtlDowncaseUnicodeChar( name[i] );
++        buffer[i] = 0;
++        cached = !wcscmp( buffer, hyp_exeW );
++    }
++    return cached;
++}
++
+ static void handle_nc_calc_size( HWND hwnd, WPARAM wparam, RECT *win_rect )
+ {
+     RECT rect = { 0, 0, 0, 0 };
+@@ -1893,6 +1919,8 @@
+ 
+     if (!win_rect) return;
+ 
++    if (!(style & (WS_MINIMIZE | WS_CHILD)) && (style & WS_THICKFRAME) && is_hoyoplay()) return;
++
+     if (user_driver->pHasWindowManager( "steamcompmgr" ))
+     {
+         /* Disable gamescope undecorated windows hack for following games. They don't expect client
+-- 
+2.51.0
