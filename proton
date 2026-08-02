@@ -15,6 +15,8 @@ import stat
 import subprocess
 import sys
 import shlex
+import socket
+import threading
 import uuid
 import json
 import time
@@ -62,6 +64,48 @@ def _route_umu_id():
         os.environ["UMU_ID"] = umu_id
 
 _route_umu_id()
+
+# The dispatch request these games make on startup has a ~1s budget covering
+# DNS, TCP, TLS and HTTP together, so a slow or lossy resolver alone can spend
+# it ("initDriver Failed"). Both DNS fixes below default on for the games in
+# _PREWARM_HOSTS, overridable via PROTON_DNS_RETRY / PROTON_DNS_PREWARM.
+_PREWARM_HOSTS = {
+    "GenshinImpact.exe": ("dispatchosglobal.yuanshen.com",
+                          "osusadispatch.yuanshen.com",
+                          "oseurodispatch.yuanshen.com",
+                          "osasiadispatch.yuanshen.com"),
+}
+_PREWARM_HOSTS["YuanShen.exe"] = _PREWARM_HOSTS["GenshinImpact.exe"]
+
+_DNS_FIX_EXE = sys.argv[2].split(os.sep)[-1] if len(sys.argv) >= 3 else ""
+_DNS_FIX_DEFAULT = "1" if _DNS_FIX_EXE in _PREWARM_HOSTS else "0"
+
+# Windows retries a lost DNS query after 1s, glibc waits 5s per attempt.
+# Match the Windows resolver cadence.
+if os.environ.get("PROTON_DNS_RETRY", _DNS_FIX_DEFAULT) != "0":
+    os.environ.setdefault("RES_OPTIONS", "timeout:1 attempts:3")
+
+# Resolve the hosts the game needs while it is still loading, so the answers
+# are cached upstream before it asks. Best effort: failures cost nothing.
+# PROTON_DNS_PREWARM may instead name the hosts to resolve, comma separated,
+# for games whose hosts aren't listed here.
+def _prewarm_dns():
+    setting = os.environ.get("PROTON_DNS_PREWARM", _DNS_FIX_DEFAULT)
+    if setting in ("0", ""):
+        return
+    if setting == "1":
+        hosts = _PREWARM_HOSTS.get(_DNS_FIX_EXE, ())
+    else:
+        hosts = tuple(h.strip() for h in setting.split(",") if h.strip())
+    def resolve(host):
+        try:
+            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        except OSError:
+            pass
+    for host in hosts:
+        threading.Thread(target=resolve, args=(host,), daemon=True).start()
+
+_prewarm_dns()
 
 import protonfixes
 
