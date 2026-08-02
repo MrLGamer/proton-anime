@@ -1,0 +1,28 @@
+From 9bf4ce3bc4aba186d04916a706729d85048cea85 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 26 Jul 2026 00:00:00 +0200
+Subject: [PATCH] winedmo: parse h264 elementary streams before decoding
+
+CriWare Sofdec (Honkai Impact 3rd movies) pushes USM chunks that
+don't align to H.264 access unit boundaries, ffmpeg can't decode
+those since TRUNCATED support was dropped and the movies abort or
+restart. This reassembles them through the av_parser path already
+used for MPEG-1/2.
+---
+ dlls/winedmo/unix_transform.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+--- a/dlls/winedmo/unix_transform.c
++++ b/dlls/winedmo/unix_transform.c
+@@ -923,7 +923,8 @@
+         return STATUS_NOT_SUPPORTED;
+     }
+
+-    if (!t->is_audio && (codec_id == AV_CODEC_ID_MPEG1VIDEO || codec_id == AV_CODEC_ID_MPEG2VIDEO))
++    if (!t->is_audio && (codec_id == AV_CODEC_ID_MPEG1VIDEO || codec_id == AV_CODEC_ID_MPEG2VIDEO
++                         || codec_id == AV_CODEC_ID_H264))
+     {
+         t->parser = av_parser_init( codec_id );
+         t->parser_codec_id = codec_id;
+--
+2.49.0
