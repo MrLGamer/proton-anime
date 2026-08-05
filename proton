@@ -42,6 +42,14 @@ from filelock import FileLock
 from random import randrange
 from pathlib import Path
 
+def _is_hoyoplay(exe_dir):
+    try:
+        return (os.path.isfile(os.path.join(exe_dir, "HYLauncher.dll"))
+                or any(os.path.isfile(os.path.join(exe_dir, d, "HYLauncher.dll"))
+                       for d in os.listdir(exe_dir)))
+    except OSError:
+        return False
+
 # Fill in UMU_ID for direct umu launches of known games so their protonfix
 # runs. Must happen before the protonfixes import resolves umu-default.
 def _route_umu_id():
@@ -50,16 +58,21 @@ def _route_umu_id():
     exe = sys.argv[2].split(os.sep)[-1]
     umu_id = {
         "GenshinImpact.exe": "umu-genshin",
+        "ZenlessZoneZero.exe": "umu-zenlesszonezero",
     }.get(exe)
     if exe == "launcher.exe":
-        # Kuro launcher: versioned subdir with launcher_main.dll
         exe_dir = os.path.dirname(sys.argv[2])
-        try:
-            if any(os.path.isfile(os.path.join(exe_dir, d, "launcher_main.dll"))
-                    for d in os.listdir(exe_dir)):
-                umu_id = "umu-3513350"
-        except OSError:
-            pass
+        if _is_hoyoplay(exe_dir):
+            # The games HoYoPlay spawns need the steam.exe AC launch fix
+            umu_id = "umu-zenlesszonezero"
+        else:
+            # Kuro launcher: versioned subdir with launcher_main.dll
+            try:
+                if any(os.path.isfile(os.path.join(exe_dir, d, "launcher_main.dll"))
+                        for d in os.listdir(exe_dir)):
+                    umu_id = "umu-3513350"
+            except OSError:
+                pass
     if umu_id:
         os.environ["UMU_ID"] = umu_id
 
@@ -68,17 +81,32 @@ _route_umu_id()
 # The dispatch request these games make on startup has a ~1s budget covering
 # DNS, TCP, TLS and HTTP together, so a slow or lossy resolver alone can spend
 # it ("initDriver Failed"). Both DNS fixes below default on for the games in
-# _PREWARM_HOSTS, overridable via PROTON_DNS_RETRY / PROTON_DNS_PREWARM.
+# _PREWARM_HOSTS and for HoYoPlay, which spawns those games itself.
+# Overridable via PROTON_DNS_RETRY / PROTON_DNS_PREWARM.
 _PREWARM_HOSTS = {
     "GenshinImpact.exe": ("dispatchosglobal.yuanshen.com",
                           "osusadispatch.yuanshen.com",
                           "oseurodispatch.yuanshen.com",
                           "osasiadispatch.yuanshen.com"),
+    "ZenlessZoneZero.exe": ("globaldp-prod-os01.zenlesszonezero.com",
+                            "globaldp-prod-os02.zenlesszonezero.com"),
 }
 _PREWARM_HOSTS["YuanShen.exe"] = _PREWARM_HOSTS["GenshinImpact.exe"]
 
-_DNS_FIX_EXE = sys.argv[2].split(os.sep)[-1] if len(sys.argv) >= 3 else ""
-_DNS_FIX_DEFAULT = "1" if _DNS_FIX_EXE in _PREWARM_HOSTS else "0"
+def _dns_fix_hosts():
+    if len(sys.argv) < 3:
+        return ()
+    exe = sys.argv[2].split(os.sep)[-1]
+    hosts = _PREWARM_HOSTS.get(exe)
+    if hosts:
+        return hosts
+    if exe == "launcher.exe" and _is_hoyoplay(os.path.dirname(sys.argv[2])):
+        return tuple(dict.fromkeys(
+            h for hs in _PREWARM_HOSTS.values() for h in hs))
+    return ()
+
+_DNS_FIX_HOSTS = _dns_fix_hosts()
+_DNS_FIX_DEFAULT = "1" if _DNS_FIX_HOSTS else "0"
 
 # Windows retries a lost DNS query after 1s, glibc waits 5s per attempt.
 # Match the Windows resolver cadence.
@@ -94,7 +122,7 @@ def _prewarm_dns():
     if setting in ("0", ""):
         return
     if setting == "1":
-        hosts = _PREWARM_HOSTS.get(_DNS_FIX_EXE, ())
+        hosts = _DNS_FIX_HOSTS
     else:
         hosts = tuple(h.strip() for h in setting.split(",") if h.strip())
     def resolve(host):
