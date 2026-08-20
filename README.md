@@ -53,7 +53,7 @@ Legend: ✅ working &nbsp;|&nbsp; ⚠️ working with issues &nbsp;|&nbsp; 🧪 
 | NTE      | Steam / Epic / launcher  | ✅ | — |
 | Nikki    | Steam / Epic / launcher  | 🧪 | — |
 | ToF      | Steam / launcher         | 🧪 | — |
-| NIKKE    | launcher                 | ❌ | Launcher updates broken, random crashes on video playback, login itself works |
+| NIKKE    | launcher                 | ⚠️ | Launcher updates probably broken, game works |
 
 > [!Note]
 > None of these games officially support Linux, so a residual risk always remains. Whether
