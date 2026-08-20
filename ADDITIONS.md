@@ -68,7 +68,8 @@ D3D11 by default.
 
 **Mods** go into `~/.local/share/xxmi/<IMPORTER>/Mods/` (under Flatpak Steam,
 `~/.var/app/com.valvesoftware.Steam/data/xxmi/`). The folder is shared between prefixes
-and survives prefix deletion. Press `F10` in-game to hot-reload mods. Set
+and survives prefix deletion. The deployed importer itself (`d3dx.ini`, `ShaderFixes/`,
+logs) is symlinked next to it as `Importer`. Press `F10` in-game to hot-reload mods. Set
 `PROTON_XXMI_MODS_PATH=/some/dir` for a custom location, or `=0` to keep mods in a
 plain folder inside the prefix.
 
