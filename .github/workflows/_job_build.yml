@@ -52,6 +52,8 @@ jobs:
 
       - name: Patch
         run: |
+          # sourceware.org rate-limits the runner IP range; clone bzip2 from the mirror
+          git config --global url."https://gitlab.com/bzip2/bzip2.git".insteadOf https://sourceware.org/git/bzip2.git
           git submodule update --init --filter=tree:0 --recursive
           # apply proton-ge-custom patches; failed hunks are fatal
           ./patches/protonprep-valve-staging.sh 2>&1 | tee /tmp/protonprep.log || true
