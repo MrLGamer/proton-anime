@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 4 Sep 2026 22:10:00 +0200
+Subject: [PATCH] vkd3d: Export shared D3D12 buffers so they can be imported
+
+CreateSharedHandle only wired up external-memory export for the texture
+resource path (VkExternalMemoryImageCreateInfo + a dedicated exportable
+allocation). Shared buffers fell through the regular heap allocator, whose
+memory is neither exportable nor dedicated, so CreateSharedHandle returned
+S_OK with a NULL handle. Give shared committed buffers the same treatment:
+tag the VkBuffer with VkExternalMemoryBufferCreateInfo and allocate a
+dedicated, exportable VkDeviceMemory, so the win32 handle can be produced
+and the buffer imported by another API (here HIP, for DLSS-NR interop).
+The non-shared buffer path is unchanged.
+---
+ libs/vkd3d/resource.c | 49 +++
+
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index 78db89c0..49888aea 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -193,6 +193,18 @@ HRESULT vkd3d_create_buffer(struct d3d12_device *device,
+         external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+         buffer_info.pNext = &external_info;
+     }
++#ifdef _WIN32
++    /* A plain SHARED buffer is exported as an opaque Win32 handle. The backing
++     * VkDeviceMemory carries VkExportMemoryAllocateInfo; the VkBuffer must be
++     * created with a matching external handle type so the memory is exportable. */
++    else if (heap_flags & D3D12_HEAP_FLAG_SHARED)
++    {
++        external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
++        external_info.pNext = NULL;
++        external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        buffer_info.pNext = &external_info;
++    }
++#endif
+ 
+     if (sparse_resource)
+     {
+@@ -4509,6 +4521,42 @@ HRESULT d3d12_resource_create_committed(struct d3d12_device *device, const D3D12
+                     "Committed Texture (not-zeroed)" : "Committed Texture (zeroed)");
+         }
+     }
++#ifdef _WIN32
++    else if (heap_flags & D3D12_HEAP_FLAG_SHARED)
++    {
++        /* A shared buffer must get its own dedicated, exportable VkDeviceMemory so
++         * that CreateSharedHandle can export it via vkGetMemoryWin32HandleKHR.
++         * Mirror the heap path, but force a whole-memory global buffer at offset 0
++         * (no suballocation) and attach VkExportMemoryAllocateInfo to the memory. */
++        struct vkd3d_allocate_memory_info allocate_info;
++        VkExportMemoryAllocateInfo export_info;
++
++        export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
++        export_info.pNext = NULL;
++        export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++
++        memset(&allocate_info, 0, sizeof(allocate_info));
++        allocate_info.memory_requirements.memoryTypeBits = ~0u;
++        allocate_info.memory_requirements.alignment = object->desc.Alignment;
++        allocate_info.memory_requirements.size = align(desc->Width, object->desc.Alignment);
++        allocate_info.heap_properties = *heap_properties;
++        allocate_info.heap_flags = (heap_flags | D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS) &
++                ~D3D12_HEAP_FLAG_CREATE_NOT_ZEROED;
++        /* pNext disables suballocation, DEDICATED keeps the buffer alone in its memory. */
++        allocate_info.flags = VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER | VKD3D_ALLOCATION_FLAG_DEDICATED;
++        allocate_info.pNext = &export_info;
++        allocate_info.vk_memory_priority = object->priority.residency_count ? vkd3d_convert_to_vk_prio(object->priority.d3d12priority) : 0.f;
++
++        if (FAILED(hr = vkd3d_allocate_memory(device,
++                &device->memory_allocator, &allocate_info, &object->mem)))
++            goto fail;
++
++        d3d12_resource_open_export_kmt(object, device, &object->mem);
++
++        object->res.vk_buffer = object->mem.resource.vk_buffer;
++        object->res.va = object->mem.resource.va;
++    }
++#endif
+     else
+     {
+         struct vkd3d_allocate_heap_memory_info allocate_info;
+-- 
+2.47.0

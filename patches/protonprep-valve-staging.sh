@@ -24,6 +24,8 @@ apply_all_in_dir() {
     pushd vkd3d-proton
     git reset --hard HEAD
     git clean -xdf
+    echo "VKD3D-PROTON: -PROTON-ANIME- export shared buffers for D3D12/HIP interop"
+    apply_all_in_dir "../patches/vkd3d-proton/"
     popd
 
     pushd dxvk-nvapi
