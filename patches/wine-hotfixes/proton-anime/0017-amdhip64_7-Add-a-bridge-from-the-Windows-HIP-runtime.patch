@@ -1,0 +1,1381 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 4 Sep 2026 14:00:00 +0200
+Subject: [PATCH] amdhip64_7: Add a bridge from the Windows HIP runtime to host
+ ROCm
+
+Windows HIP applications load amdhip64_7.dll (the ROCm 7 runtime shipped
+with Adrenalin drivers), which has no Wine counterpart. Forward the
+runtime API to the host libamdhip64.so.7 through a unixlib: HIP fat
+binaries are clang offload bundles of amdgcn-amd-amdhsa code objects,
+identical on Windows and Linux, so registration data, kernel handles and
+device pointers pass through unmodified and kernels run natively on the
+host GPU. The DLL fails to load when no host runtime is found, matching
+the Windows behavior without an AMD driver.
+
+For D3D12<->HIP zero-copy interop (e.g. DLSS-NR): ROCm on Linux reports
+no adapter LUID, so apps that match the HIP device to the D3D12 adapter
+by LUID refuse to share; the bridge stamps the DXGI adapter LUID into
+the device properties (auto-detected, PROTON_HIP_LUID overrides) so the
+match succeeds. The runtime is loaded from a bundled <build>/files/lib/rocm
+directory when present, so no container filesystem shares are needed. Shared D3D12/D3D11
+handle-type imports are resolved to the backing dmabuf fd (via the win32u
+d3dkmt helpers, the same path winevulkan uses on import) and re-imported
+as opaque fds, which the host runtime accepts; failures fall through so
+callers can use their staging path. PROTON_HIP_LIB overrides the library
+path and PROTON_HIP_PRELOAD preloads host deps the Steam Runtime lacks
+(e.g. libnuma). win32u exports the two d3dkmt fd helpers for the bridge.
+---
+diff --git a/dlls/amdhip64_7/Makefile.in b/dlls/amdhip64_7/Makefile.in
+new file mode 100644
+index 00000000000..096c528a0fa
+--- /dev/null
++++ b/dlls/amdhip64_7/Makefile.in
+@@ -0,0 +1,6 @@
++MODULE  = amdhip64_7.dll
++UNIXLIB = amdhip64_7.so
++
++SOURCES = \
++	main.c \
++	unix.c
+diff --git a/dlls/amdhip64_7/amdhip64_7.spec b/dlls/amdhip64_7/amdhip64_7.spec
+new file mode 100644
+index 00000000000..5d53f30fdb4
+--- /dev/null
++++ b/dlls/amdhip64_7/amdhip64_7.spec
+@@ -0,0 +1,45 @@
++@ cdecl __hipPopCallConfiguration(ptr ptr ptr ptr)
++@ cdecl __hipPushCallConfiguration(ptr ptr long ptr)
++@ cdecl __hipRegisterFatBinary(ptr)
++@ cdecl __hipRegisterFunction(ptr ptr ptr ptr long ptr ptr ptr ptr ptr)
++@ cdecl __hipRegisterVar(ptr ptr ptr ptr long long long long)
++@ cdecl __hipUnregisterFatBinary(ptr)
++@ cdecl hipDestroyExternalMemory(ptr)
++@ cdecl hipDeviceGetAttribute(ptr long long)
++@ cdecl hipDeviceSynchronize()
++@ cdecl hipDriverGetVersion(ptr)
++@ cdecl hipEventCreate(ptr)
++@ cdecl hipEventCreateWithFlags(ptr long)
++@ cdecl hipEventDestroy(ptr)
++@ cdecl hipEventElapsedTime(ptr ptr ptr)
++@ cdecl hipEventQuery(ptr)
++@ cdecl hipEventRecord(ptr ptr)
++@ cdecl hipEventSynchronize(ptr)
++@ cdecl hipExternalMemoryGetMappedBuffer(ptr ptr ptr)
++@ cdecl hipFree(ptr)
++@ cdecl hipGetDevice(ptr)
++@ cdecl hipGetDeviceCount(ptr)
++@ cdecl hipGetDevicePropertiesR0600(ptr long)
++@ cdecl hipGetErrorName(long)
++@ cdecl hipGetErrorString(long)
++@ cdecl hipGetLastError()
++@ cdecl hipHostFree(ptr)
++@ cdecl hipHostMalloc(ptr long long)
++@ cdecl hipImportExternalMemory(ptr ptr)
++@ cdecl hipInit(long)
++@ cdecl hipLaunchKernel(ptr ptr ptr ptr long ptr)
++@ cdecl hipMalloc(ptr long)
++@ cdecl hipMemcpy(ptr ptr long long)
++@ cdecl hipMemcpyAsync(ptr ptr long long ptr)
++@ cdecl hipMemcpyFromSymbol(ptr ptr long long long)
++@ cdecl hipMemcpyToSymbol(ptr ptr long long long)
++@ cdecl hipMemset(ptr long long)
++@ cdecl hipMemsetAsync(ptr long long ptr)
++@ cdecl hipPeekAtLastError()
++@ cdecl hipRuntimeGetVersion(ptr)
++@ cdecl hipSetDevice(long)
++@ cdecl hipStreamCreate(ptr)
++@ cdecl hipStreamCreateWithFlags(ptr long)
++@ cdecl hipStreamDestroy(ptr)
++@ cdecl hipStreamQuery(ptr)
++@ cdecl hipStreamSynchronize(ptr)
+diff --git a/dlls/amdhip64_7/main.c b/dlls/amdhip64_7/main.c
+new file mode 100644
+index 00000000000..cb4e0ea4c8c
+--- /dev/null
++++ b/dlls/amdhip64_7/main.c
+@@ -0,0 +1,395 @@
++/*
++ * AMD HIP runtime bridge - PE side
++ *
++ * Forwards the HIP runtime API to the host ROCm libamdhip64.so.7 so
++ * Windows HIP applications can run compute kernels on the host GPU.
++ * The HIP fat binary format (clang offload bundles of amdgcn-amd-amdhsa
++ * code objects) is identical on Windows and Linux, so registration data
++ * and kernel handles pass through unmodified.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "wine/debug.h"
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(amdhip);
++
++typedef int hipError_t;
++typedef struct { unsigned int x, y, z; } dim3;
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
++{
++    struct hip_params params = {{0}};
++
++    if (reason != DLL_PROCESS_ATTACH) return TRUE;
++    DisableThreadLibraryCalls( inst );
++    if (__wine_init_unix_call()) return FALSE;
++    /* fail the load when there is no usable host HIP runtime, like the
++     * Windows DLL does without an AMD driver */
++    if (WINE_UNIX_CALL( unix_hip_attach, &params ) || !params.ret)
++    {
++        ERR( "no usable host libamdhip64.so.7, failing DLL load\n" );
++        return FALSE;
++    }
++    return TRUE;
++}
++
++static UINT64 hip_call( unsigned int code, struct hip_params *params )
++{
++    if (WINE_UNIX_CALL( code, params )) return HIP_ERROR_UNKNOWN;
++    return params->ret;
++}
++
++#define ARG(x) ((UINT64)(UINT_PTR)(x))
++
++hipError_t __cdecl __hipPopCallConfiguration( dim3 *grid, dim3 *block, SIZE_T *shared_mem, void **stream )
++{
++    struct hip_params p = {{ ARG(grid), ARG(block), ARG(shared_mem), ARG(stream) }};
++    return hip_call( unix___hipPopCallConfiguration, &p );
++}
++
++hipError_t __cdecl __hipPushCallConfiguration( dim3 grid, dim3 block, SIZE_T shared_mem, void *stream )
++{
++    struct hip_params p = {{ grid.x, grid.y, grid.z, block.x, block.y, block.z, shared_mem, ARG(stream) }};
++    return hip_call( unix___hipPushCallConfiguration, &p );
++}
++
++void ** __cdecl __hipRegisterFatBinary( const void *data )
++{
++    struct hip_params p = {{ ARG(data) }};
++    if (WINE_UNIX_CALL( unix___hipRegisterFatBinary, &p )) return NULL;
++    return (void **)(UINT_PTR)p.ret;
++}
++
++void __cdecl __hipRegisterFunction( void **modules, const void *host_function, char *device_function,
++                                    const char *device_name, unsigned int thread_limit, void *tid,
++                                    void *bid, void *block_dim, void *grid_dim, int *wsize )
++{
++    struct hip_params p = {{ ARG(modules), ARG(host_function), ARG(device_function), ARG(device_name),
++                             thread_limit, ARG(tid), ARG(bid), ARG(block_dim), ARG(grid_dim), ARG(wsize) }};
++    WINE_UNIX_CALL( unix___hipRegisterFunction, &p );
++}
++
++void __cdecl __hipRegisterVar( void **modules, void *var, char *host_var, char *device_var,
++                               int ext, SIZE_T size, int constant, int global )
++{
++    struct hip_params p = {{ ARG(modules), ARG(var), ARG(host_var), ARG(device_var),
++                             (UINT64)ext, size, (UINT64)constant, (UINT64)global }};
++    WINE_UNIX_CALL( unix___hipRegisterVar, &p );
++}
++
++void __cdecl __hipUnregisterFatBinary( void **modules )
++{
++    struct hip_params p = {{ ARG(modules) }};
++    WINE_UNIX_CALL( unix___hipUnregisterFatBinary, &p );
++}
++
++hipError_t __cdecl hipDestroyExternalMemory( void *ext_mem )
++{
++    struct hip_params p = {{ ARG(ext_mem) }};
++    return hip_call( unix_hipDestroyExternalMemory, &p );
++}
++
++hipError_t __cdecl hipDeviceGetAttribute( int *value, int attr, int device )
++{
++    struct hip_params p = {{ ARG(value), (UINT64)attr, (UINT64)device }};
++    return hip_call( unix_hipDeviceGetAttribute, &p );
++}
++
++hipError_t __cdecl hipDeviceSynchronize(void)
++{
++    struct hip_params p = {{0}};
++    return hip_call( unix_hipDeviceSynchronize, &p );
++}
++
++hipError_t __cdecl hipDriverGetVersion( int *version )
++{
++    struct hip_params p = {{ ARG(version) }};
++    return hip_call( unix_hipDriverGetVersion, &p );
++}
++
++hipError_t __cdecl hipEventCreate( void **event )
++{
++    struct hip_params p = {{ ARG(event) }};
++    return hip_call( unix_hipEventCreate, &p );
++}
++
++hipError_t __cdecl hipEventCreateWithFlags( void **event, unsigned int flags )
++{
++    struct hip_params p = {{ ARG(event), flags }};
++    return hip_call( unix_hipEventCreateWithFlags, &p );
++}
++
++hipError_t __cdecl hipEventDestroy( void *event )
++{
++    struct hip_params p = {{ ARG(event) }};
++    return hip_call( unix_hipEventDestroy, &p );
++}
++
++hipError_t __cdecl hipEventElapsedTime( float *ms, void *start, void *stop )
++{
++    struct hip_params p = {{ ARG(ms), ARG(start), ARG(stop) }};
++    return hip_call( unix_hipEventElapsedTime, &p );
++}
++
++hipError_t __cdecl hipEventQuery( void *event )
++{
++    struct hip_params p = {{ ARG(event) }};
++    return hip_call( unix_hipEventQuery, &p );
++}
++
++hipError_t __cdecl hipEventRecord( void *event, void *stream )
++{
++    struct hip_params p = {{ ARG(event), ARG(stream) }};
++    return hip_call( unix_hipEventRecord, &p );
++}
++
++hipError_t __cdecl hipEventSynchronize( void *event )
++{
++    struct hip_params p = {{ ARG(event) }};
++    return hip_call( unix_hipEventSynchronize, &p );
++}
++
++hipError_t __cdecl hipExternalMemoryGetMappedBuffer( void **dev_ptr, void *ext_mem, const void *buffer_desc )
++{
++    struct hip_params p = {{ ARG(dev_ptr), ARG(ext_mem), ARG(buffer_desc) }};
++    return hip_call( unix_hipExternalMemoryGetMappedBuffer, &p );
++}
++
++hipError_t __cdecl hipFree( void *ptr )
++{
++    struct hip_params p = {{ ARG(ptr) }};
++    return hip_call( unix_hipFree, &p );
++}
++
++hipError_t __cdecl hipGetDevice( int *device )
++{
++    struct hip_params p = {{ ARG(device) }};
++    return hip_call( unix_hipGetDevice, &p );
++}
++
++hipError_t __cdecl hipGetDeviceCount( int *count )
++{
++    struct hip_params p = {{ ARG(count) }};
++    return hip_call( unix_hipGetDeviceCount, &p );
++}
++
++/* find the D3D adapter LUID so the unix side can stamp it into the HIP
++ * device properties (ROCm reports none, defeating apps' same-GPU checks) */
++static UINT64 get_dxgi_adapter_luid( BOOL *valid )
++{
++    static UINT64 cached_luid;
++    static int cached_state;  /* 0 = untried, 1 = found, -1 = failed */
++
++    if (!cached_state)
++    {
++        HRESULT (WINAPI *create_factory)( const GUID *riid, void **factory );
++        void *factory = NULL, *adapter = NULL;
++        HMODULE dxgi = GetModuleHandleW( L"dxgi.dll" );
++
++        cached_state = -1;
++        if (!dxgi) dxgi = LoadLibraryW( L"dxgi.dll" );
++        if (dxgi && (create_factory = (void *)GetProcAddress( dxgi, "CreateDXGIFactory1" )))
++        {
++            static const GUID iid_factory1 = {0x770aae78,0xf26f,0x4dba,{0xa8,0x29,0x25,0x3c,0x83,0xd1,0xb3,0x87}};
++            if (SUCCEEDED(create_factory( &iid_factory1, (void **)&factory )))
++            {
++                /* IDXGIFactory1::EnumAdapters1 slot 12, IDXGIAdapter1::GetDesc1 slot 10 */
++                HRESULT (WINAPI *enum_adapters1)( void *, UINT, void ** ) = (*(void ***)factory)[12];
++                UINT i;
++                for (i = 0; cached_state < 0 && enum_adapters1( factory, i, &adapter ) == S_OK; i++)
++                {
++                    struct  /* DXGI_ADAPTER_DESC1 */
++                    {
++                        WCHAR desc[128];
++                        UINT vendor_id, device_id, subsys_id, revision;
++                        SIZE_T mem[3];
++                        UINT64 luid;
++                        UINT flags;
++                    } desc;
++                    HRESULT (WINAPI *get_desc1)( void *, void * ) = (*(void ***)adapter)[10];
++                    if (SUCCEEDED(get_desc1( adapter, &desc )) && !(desc.flags & 2 /* SOFTWARE */))
++                    {
++                        cached_luid = desc.luid;
++                        cached_state = 1;
++                        TRACE( "adapter %u vendor %#x luid %s\n", i, desc.vendor_id,
++                               wine_dbgstr_longlong(desc.luid) );
++                    }
++                    ((ULONG (WINAPI *)(void *))(*(void ***)adapter)[2])( adapter );
++                }
++                ((ULONG (WINAPI *)(void *))(*(void ***)factory)[2])( factory );
++            }
++        }
++        if (cached_state < 0) WARN( "no hardware DXGI adapter found for LUID stamping\n" );
++    }
++    *valid = cached_state > 0;
++    return cached_luid;
++}
++
++hipError_t __cdecl hipGetDevicePropertiesR0600( void *props, int device )
++{
++    BOOL luid_valid = FALSE;
++    UINT64 luid = get_dxgi_adapter_luid( &luid_valid );
++    struct hip_params p = {{ ARG(props), (UINT64)device, luid, (UINT64)luid_valid }};
++    return hip_call( unix_hipGetDevicePropertiesR0600, &p );
++}
++
++const char * __cdecl hipGetErrorName( hipError_t error )
++{
++    struct hip_params p = {{ (UINT64)error }};
++    if (WINE_UNIX_CALL( unix_hipGetErrorName, &p ) || !p.ret) return "hipErrorUnknown";
++    return (const char *)(UINT_PTR)p.ret;
++}
++
++const char * __cdecl hipGetErrorString( hipError_t error )
++{
++    struct hip_params p = {{ (UINT64)error }};
++    if (WINE_UNIX_CALL( unix_hipGetErrorString, &p ) || !p.ret) return "unknown error";
++    return (const char *)(UINT_PTR)p.ret;
++}
++
++hipError_t __cdecl hipGetLastError(void)
++{
++    struct hip_params p = {{0}};
++    return hip_call( unix_hipGetLastError, &p );
++}
++
++hipError_t __cdecl hipHostFree( void *ptr )
++{
++    struct hip_params p = {{ ARG(ptr) }};
++    return hip_call( unix_hipHostFree, &p );
++}
++
++hipError_t __cdecl hipHostMalloc( void **ptr, SIZE_T size, unsigned int flags )
++{
++    struct hip_params p = {{ ARG(ptr), size, flags }};
++    return hip_call( unix_hipHostMalloc, &p );
++}
++
++hipError_t __cdecl hipImportExternalMemory( void **ext_mem, const void *handle_desc )
++{
++    struct hip_params p = {{ ARG(ext_mem), ARG(handle_desc) }};
++    return hip_call( unix_hipImportExternalMemory, &p );
++}
++
++hipError_t __cdecl hipInit( unsigned int flags )
++{
++    struct hip_params p = {{ flags }};
++    return hip_call( unix_hipInit, &p );
++}
++
++hipError_t __cdecl hipLaunchKernel( const void *function, dim3 grid, dim3 block,
++                                    void **args, SIZE_T shared_mem, void *stream )
++{
++    struct hip_params p = {{ ARG(function), grid.x, grid.y, grid.z, block.x, block.y, block.z,
++                             ARG(args), shared_mem, ARG(stream) }};
++    return hip_call( unix_hipLaunchKernel, &p );
++}
++
++hipError_t __cdecl hipMalloc( void **ptr, SIZE_T size )
++{
++    struct hip_params p = {{ ARG(ptr), size }};
++    return hip_call( unix_hipMalloc, &p );
++}
++
++hipError_t __cdecl hipMemcpy( void *dst, const void *src, SIZE_T size, int kind )
++{
++    struct hip_params p = {{ ARG(dst), ARG(src), size, (UINT64)kind }};
++    return hip_call( unix_hipMemcpy, &p );
++}
++
++hipError_t __cdecl hipMemcpyAsync( void *dst, const void *src, SIZE_T size, int kind, void *stream )
++{
++    struct hip_params p = {{ ARG(dst), ARG(src), size, (UINT64)kind, ARG(stream) }};
++    return hip_call( unix_hipMemcpyAsync, &p );
++}
++
++hipError_t __cdecl hipMemcpyFromSymbol( void *dst, const void *symbol, SIZE_T size, SIZE_T offset, int kind )
++{
++    struct hip_params p = {{ ARG(dst), ARG(symbol), size, offset, (UINT64)kind }};
++    return hip_call( unix_hipMemcpyFromSymbol, &p );
++}
++
++hipError_t __cdecl hipMemcpyToSymbol( const void *symbol, const void *src, SIZE_T size, SIZE_T offset, int kind )
++{
++    struct hip_params p = {{ ARG(symbol), ARG(src), size, offset, (UINT64)kind }};
++    return hip_call( unix_hipMemcpyToSymbol, &p );
++}
++
++hipError_t __cdecl hipMemset( void *ptr, int value, SIZE_T size )
++{
++    struct hip_params p = {{ ARG(ptr), (UINT64)value, size }};
++    return hip_call( unix_hipMemset, &p );
++}
++
++hipError_t __cdecl hipMemsetAsync( void *ptr, int value, SIZE_T size, void *stream )
++{
++    struct hip_params p = {{ ARG(ptr), (UINT64)value, size, ARG(stream) }};
++    return hip_call( unix_hipMemsetAsync, &p );
++}
++
++hipError_t __cdecl hipPeekAtLastError(void)
++{
++    struct hip_params p = {{0}};
++    return hip_call( unix_hipPeekAtLastError, &p );
++}
++
++hipError_t __cdecl hipRuntimeGetVersion( int *version )
++{
++    struct hip_params p = {{ ARG(version) }};
++    return hip_call( unix_hipRuntimeGetVersion, &p );
++}
++
++hipError_t __cdecl hipSetDevice( int device )
++{
++    struct hip_params p = {{ (UINT64)device }};
++    return hip_call( unix_hipSetDevice, &p );
++}
++
++hipError_t __cdecl hipStreamCreate( void **stream )
++{
++    struct hip_params p = {{ ARG(stream) }};
++    return hip_call( unix_hipStreamCreate, &p );
++}
++
++hipError_t __cdecl hipStreamCreateWithFlags( void **stream, unsigned int flags )
++{
++    struct hip_params p = {{ ARG(stream), flags }};
++    return hip_call( unix_hipStreamCreateWithFlags, &p );
++}
++
++hipError_t __cdecl hipStreamDestroy( void *stream )
++{
++    struct hip_params p = {{ ARG(stream) }};
++    return hip_call( unix_hipStreamDestroy, &p );
++}
++
++hipError_t __cdecl hipStreamQuery( void *stream )
++{
++    struct hip_params p = {{ ARG(stream) }};
++    return hip_call( unix_hipStreamQuery, &p );
++}
++
++hipError_t __cdecl hipStreamSynchronize( void *stream )
++{
++    struct hip_params p = {{ ARG(stream) }};
++    return hip_call( unix_hipStreamSynchronize, &p );
++}
+diff --git a/dlls/amdhip64_7/unix.c b/dlls/amdhip64_7/unix.c
+new file mode 100644
+index 00000000000..8305976929e
+--- /dev/null
++++ b/dlls/amdhip64_7/unix.c
+@@ -0,0 +1,756 @@
++/*
++ * AMD HIP runtime bridge - unix side
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE  /* for dladdr / Dl_info */
++#endif
++
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <dlfcn.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winternl.h"
++#include "wine/server.h"
++#include "wine/debug.h"
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(amdhip);
++
++struct dim3 { unsigned int x, y, z; };
++
++/* win32u helpers to turn a shared D3DKMT NT handle into the backing unix fd,
++ * exported from win32u.so (same conversion winevulkan uses on memory import) */
++static unsigned int (*p_d3dkmt_open_resource)( unsigned int global, void *shared,
++                                               unsigned int *mutex, unsigned int *sync );
++static int (*p_d3dkmt_object_get_fd)( unsigned int local );
++
++static int d3dkmt_handle_to_fd( void *nt_handle )
++{
++    unsigned int mutex = 0, sync = 0, local;
++    if (!p_d3dkmt_open_resource || !p_d3dkmt_object_get_fd) return -1;
++    if (!(local = p_d3dkmt_open_resource( 0, nt_handle, &mutex, &sync ))) return -1;
++    return p_d3dkmt_object_get_fd( local );
++}
++
++/* from hip_runtime_api.h; Windows and Linux layouts match */
++#define HIP_EXT_MEM_OPAQUE_FD      1
++#define HIP_EXT_MEM_OPAQUE_WIN32   2
++#define HIP_EXT_MEM_D3D12_HEAP     4
++#define HIP_EXT_MEM_D3D12_RESOURCE 5
++#define HIP_EXT_MEM_D3D11_RESOURCE 6
++
++struct hip_ext_mem_desc
++{
++    int type;
++    union
++    {
++        int fd;
++        struct { void *handle; const void *name; } win32;
++        const void *nvsci;
++    } handle;
++    unsigned long long size;
++    unsigned int flags;
++    unsigned int reserved[16];
++};
++
++static void *hip_lib;
++
++static int (*p___hipPopCallConfiguration)( struct dim3 *, struct dim3 *, size_t *, void ** );
++static int (*p___hipPushCallConfiguration)( struct dim3, struct dim3, size_t, void * );
++static void ** (*p___hipRegisterFatBinary)( const void * );
++static void (*p___hipRegisterFunction)( void **, const void *, char *, const char *, unsigned int,
++                                        void *, void *, void *, void *, int * );
++static void (*p___hipRegisterVar)( void **, void *, char *, char *, int, size_t, int, int );
++static void (*p___hipUnregisterFatBinary)( void ** );
++static int (*p_hipDestroyExternalMemory)( void * );
++static int (*p_hipDeviceGetAttribute)( int *, int, int );
++static int (*p_hipDeviceSynchronize)( void );
++static int (*p_hipDriverGetVersion)( int * );
++static int (*p_hipEventCreate)( void ** );
++static int (*p_hipEventCreateWithFlags)( void **, unsigned int );
++static int (*p_hipEventDestroy)( void * );
++static int (*p_hipEventElapsedTime)( float *, void *, void * );
++static int (*p_hipEventQuery)( void * );
++static int (*p_hipEventRecord)( void *, void * );
++static int (*p_hipEventSynchronize)( void * );
++static int (*p_hipExternalMemoryGetMappedBuffer)( void **, void *, const void * );
++static int (*p_hipFree)( void * );
++static int (*p_hipGetDevice)( int * );
++static int (*p_hipGetDeviceCount)( int * );
++static int (*p_hipGetDevicePropertiesR0600)( void *, int );
++static const char * (*p_hipGetErrorName)( int );
++static const char * (*p_hipGetErrorString)( int );
++static int (*p_hipGetLastError)( void );
++static int (*p_hipHostFree)( void * );
++static int (*p_hipHostMalloc)( void **, size_t, unsigned int );
++static int (*p_hipImportExternalMemory)( void **, const void * );
++static int (*p_hipInit)( unsigned int );
++static int (*p_hipLaunchKernel)( const void *, struct dim3, struct dim3, void **, size_t, void * );
++static int (*p_hipMalloc)( void **, size_t );
++static int (*p_hipMemcpy)( void *, const void *, size_t, int );
++static int (*p_hipMemcpyAsync)( void *, const void *, size_t, int, void * );
++static int (*p_hipMemcpyFromSymbol)( void *, const void *, size_t, size_t, int );
++static int (*p_hipMemcpyToSymbol)( const void *, const void *, size_t, size_t, int );
++static int (*p_hipMemset)( void *, int, size_t );
++static int (*p_hipMemsetAsync)( void *, int, size_t, void * );
++static int (*p_hipPeekAtLastError)( void );
++static int (*p_hipRuntimeGetVersion)( int * );
++static int (*p_hipSetDevice)( int );
++static int (*p_hipStreamCreate)( void ** );
++static int (*p_hipStreamCreateWithFlags)( void **, unsigned int );
++static int (*p_hipStreamDestroy)( void * );
++static int (*p_hipStreamQuery)( void * );
++static int (*p_hipStreamSynchronize)( void * );
++
++static NTSTATUS hip_attach( void *args )
++{
++    struct hip_params *params = args;
++    const char *override = getenv( "PROTON_HIP_LIB" );
++    const char *preload = getenv( "PROTON_HIP_PRELOAD" );
++
++    params->ret = 0;
++    /* dependencies of the host runtime that the Steam Runtime container
++     * lacks (e.g. libnuma), colon-separated */
++    if (preload)
++    {
++        char *copy = strdup( preload ), *tok, *save = NULL;
++        for (tok = strtok_r( copy, ":", &save ); tok; tok = strtok_r( NULL, ":", &save ))
++            if (!dlopen( tok, RTLD_NOW | RTLD_GLOBAL ))
++                WARN( "failed to preload %s: %s\n", tok, dlerror() );
++        free( copy );
++    }
++    dlopen( "libnuma.so.1", RTLD_NOW | RTLD_GLOBAL );
++    if (override) hip_lib = dlopen( override, RTLD_NOW );
++    /* runtime bundled with the build: <lib>/wine/x86_64-unix/../../rocm
++     * ($ORIGIN runpaths make the bundle self-contained) */
++    if (!hip_lib)
++    {
++        Dl_info info;
++        if (dladdr( (void *)hip_attach, &info ) && info.dli_fname)
++        {
++            const char *slash = strrchr( info.dli_fname, '/' );
++            if (slash)
++            {
++                char path[4096];
++                int n = slash - info.dli_fname + 1;
++                if (n < (int)sizeof(path) - 40)
++                {
++                    memcpy( path, info.dli_fname, n );
++                    strcpy( path + n, "../../rocm/libnuma.so.1" );
++                    dlopen( path, RTLD_NOW | RTLD_GLOBAL );
++                    strcpy( path + n, "../../rocm/libamdhip64.so.7" );
++                    hip_lib = dlopen( path, RTLD_NOW );
++                    if (hip_lib) TRACE( "using bundled runtime %s\n", path );
++                }
++            }
++        }
++    }
++    if (!hip_lib) hip_lib = dlopen( "libamdhip64.so.7", RTLD_NOW );
++    if (!hip_lib) hip_lib = dlopen( "/opt/rocm/lib/libamdhip64.so.7", RTLD_NOW );
++    if (!hip_lib)
++    {
++        ERR( "failed to load host HIP runtime: %s\n", dlerror() );
++        return STATUS_SUCCESS;
++    }
++
++#define LOAD_FUNC(f) \
++    if (!(p_##f = dlsym( hip_lib, #f ))) WARN( "%s not found in host HIP runtime\n", #f )
++    LOAD_FUNC( __hipPopCallConfiguration );
++    LOAD_FUNC( __hipPushCallConfiguration );
++    LOAD_FUNC( __hipRegisterFatBinary );
++    LOAD_FUNC( __hipRegisterFunction );
++    LOAD_FUNC( __hipRegisterVar );
++    LOAD_FUNC( __hipUnregisterFatBinary );
++    LOAD_FUNC( hipDestroyExternalMemory );
++    LOAD_FUNC( hipDeviceGetAttribute );
++    LOAD_FUNC( hipDeviceSynchronize );
++    LOAD_FUNC( hipDriverGetVersion );
++    LOAD_FUNC( hipEventCreate );
++    LOAD_FUNC( hipEventCreateWithFlags );
++    LOAD_FUNC( hipEventDestroy );
++    LOAD_FUNC( hipEventElapsedTime );
++    LOAD_FUNC( hipEventQuery );
++    LOAD_FUNC( hipEventRecord );
++    LOAD_FUNC( hipEventSynchronize );
++    LOAD_FUNC( hipExternalMemoryGetMappedBuffer );
++    LOAD_FUNC( hipFree );
++    LOAD_FUNC( hipGetDevice );
++    LOAD_FUNC( hipGetDeviceCount );
++    LOAD_FUNC( hipGetDevicePropertiesR0600 );
++    LOAD_FUNC( hipGetErrorName );
++    LOAD_FUNC( hipGetErrorString );
++    LOAD_FUNC( hipGetLastError );
++    LOAD_FUNC( hipHostFree );
++    LOAD_FUNC( hipHostMalloc );
++    LOAD_FUNC( hipImportExternalMemory );
++    LOAD_FUNC( hipInit );
++    LOAD_FUNC( hipLaunchKernel );
++    LOAD_FUNC( hipMalloc );
++    LOAD_FUNC( hipMemcpy );
++    LOAD_FUNC( hipMemcpyAsync );
++    LOAD_FUNC( hipMemcpyFromSymbol );
++    LOAD_FUNC( hipMemcpyToSymbol );
++    LOAD_FUNC( hipMemset );
++    LOAD_FUNC( hipMemsetAsync );
++    LOAD_FUNC( hipPeekAtLastError );
++    LOAD_FUNC( hipRuntimeGetVersion );
++    LOAD_FUNC( hipSetDevice );
++    LOAD_FUNC( hipStreamCreate );
++    LOAD_FUNC( hipStreamCreateWithFlags );
++    LOAD_FUNC( hipStreamDestroy );
++    LOAD_FUNC( hipStreamQuery );
++    LOAD_FUNC( hipStreamSynchronize );
++#undef LOAD_FUNC
++
++    /* win32u.so sits next to this unixlib; load the d3dkmt fd helpers from it
++     * so we can resolve shared D3D12 buffer handles to their dmabuf fd */
++    {
++        Dl_info info;
++        void *w32u = NULL;
++        if (dladdr( (void *)hip_attach, &info ) && info.dli_fname)
++        {
++            const char *slash = strrchr( info.dli_fname, '/' );
++            if (slash)
++            {
++                char path[4096];
++                int n = slash - info.dli_fname + 1;
++                if (n < (int)sizeof(path) - 16)
++                {
++                    memcpy( path, info.dli_fname, n );
++                    strcpy( path + n, "win32u.so" );
++                    w32u = dlopen( path, RTLD_NOW | RTLD_GLOBAL | RTLD_NOLOAD );
++                    if (!w32u) w32u = dlopen( path, RTLD_NOW | RTLD_GLOBAL );
++                }
++            }
++        }
++        if (!w32u) w32u = dlopen( "win32u.so", RTLD_NOW | RTLD_GLOBAL | RTLD_NOLOAD );
++        if (w32u)
++        {
++            p_d3dkmt_open_resource = dlsym( w32u, "d3dkmt_open_resource" );
++            p_d3dkmt_object_get_fd = dlsym( w32u, "d3dkmt_object_get_fd" );
++        }
++        if (!p_d3dkmt_open_resource || !p_d3dkmt_object_get_fd)
++            WARN( "d3dkmt fd helpers unavailable; shared D3D12 interop limited to fd-backed handles\n" );
++    }
++
++    TRACE( "host HIP runtime loaded\n" );
++    params->ret = 1;
++    return STATUS_SUCCESS;
++}
++
++#define PTR(i)  ((void *)(ULONG_PTR)p->args[i])
++#define CPTR(i) ((const void *)(ULONG_PTR)p->args[i])
++#define INT(i)  ((int)p->args[i])
++#define UINT_ARG(i) ((unsigned int)p->args[i])
++#define SZ(i)   ((size_t)p->args[i])
++
++#define CHECK(f) if (!p_##f) { p->ret = HIP_ERROR_UNKNOWN; return STATUS_SUCCESS; }
++
++static NTSTATUS uf___hipPopCallConfiguration( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( __hipPopCallConfiguration );
++    p->ret = p___hipPopCallConfiguration( PTR(0), PTR(1), PTR(2), PTR(3) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf___hipPushCallConfiguration( void *args )
++{
++    struct hip_params *p = args;
++    struct dim3 grid = { UINT_ARG(0), UINT_ARG(1), UINT_ARG(2) };
++    struct dim3 block = { UINT_ARG(3), UINT_ARG(4), UINT_ARG(5) };
++    CHECK( __hipPushCallConfiguration );
++    p->ret = p___hipPushCallConfiguration( grid, block, SZ(6), PTR(7) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf___hipRegisterFatBinary( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( __hipRegisterFatBinary );
++    p->ret = (ULONG_PTR)p___hipRegisterFatBinary( CPTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf___hipRegisterFunction( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( __hipRegisterFunction );
++    p___hipRegisterFunction( PTR(0), CPTR(1), PTR(2), CPTR(3), UINT_ARG(4),
++                             PTR(5), PTR(6), PTR(7), PTR(8), PTR(9) );
++    p->ret = 0;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf___hipRegisterVar( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( __hipRegisterVar );
++    p___hipRegisterVar( PTR(0), PTR(1), PTR(2), PTR(3), INT(4), SZ(5), INT(6), INT(7) );
++    p->ret = 0;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf___hipUnregisterFatBinary( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( __hipUnregisterFatBinary );
++    p___hipUnregisterFatBinary( PTR(0) );
++    p->ret = 0;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipDestroyExternalMemory( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipDestroyExternalMemory );
++    p->ret = p_hipDestroyExternalMemory( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipDeviceGetAttribute( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipDeviceGetAttribute );
++    p->ret = p_hipDeviceGetAttribute( PTR(0), INT(1), INT(2) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipDeviceSynchronize( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipDeviceSynchronize );
++    p->ret = p_hipDeviceSynchronize();
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipDriverGetVersion( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipDriverGetVersion );
++    p->ret = p_hipDriverGetVersion( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventCreate( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventCreate );
++    p->ret = p_hipEventCreate( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventCreateWithFlags( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventCreateWithFlags );
++    p->ret = p_hipEventCreateWithFlags( PTR(0), UINT_ARG(1) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventDestroy( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventDestroy );
++    p->ret = p_hipEventDestroy( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventElapsedTime( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventElapsedTime );
++    p->ret = p_hipEventElapsedTime( PTR(0), PTR(1), PTR(2) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventQuery( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventQuery );
++    p->ret = p_hipEventQuery( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventRecord( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventRecord );
++    p->ret = p_hipEventRecord( PTR(0), PTR(1) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipEventSynchronize( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipEventSynchronize );
++    p->ret = p_hipEventSynchronize( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipExternalMemoryGetMappedBuffer( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipExternalMemoryGetMappedBuffer );
++    p->ret = p_hipExternalMemoryGetMappedBuffer( PTR(0), PTR(1), CPTR(2) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipFree( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipFree );
++    p->ret = p_hipFree( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipGetDevice( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipGetDevice );
++    p->ret = p_hipGetDevice( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipGetDeviceCount( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipGetDeviceCount );
++    p->ret = p_hipGetDeviceCount( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++/* hipDeviceProp_tR0600 field offsets (stable versioned ABI, x86_64) */
++#define HIP_PROP_LUID_OFFSET      272
++#define HIP_PROP_NODEMASK_OFFSET  280
++
++static NTSTATUS uf_hipGetDevicePropertiesR0600( void *args )
++{
++    struct hip_params *p = args;
++    char *props = PTR(0);
++    const char *luid = getenv( "PROTON_HIP_LUID" );
++    CHECK( hipGetDevicePropertiesR0600 );
++    p->ret = p_hipGetDevicePropertiesR0600( props, INT(1) );
++
++    /* ROCm leaves luid zeroed on Linux, so apps that match the HIP device
++     * to the D3D12 adapter by LUID (to prove same-GPU before sharing memory)
++     * never enable zero-copy interop. On a single-GPU box they are the same
++     * card; stamp the DXGI adapter LUID (detected PE-side, args[2]/[3], or
++     * from PROTON_HIP_LUID) so that match succeeds. */
++    if (!p->ret && props)
++    {
++        if (luid)
++        {
++            unsigned int b[8] = {0}, i, n;
++            n = sscanf( luid, "%2x%2x%2x%2x%2x%2x%2x%2x",
++                        &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &b[6], &b[7] );
++            for (i = 0; i < 8; i++) props[HIP_PROP_LUID_OFFSET + i] = (i < n) ? (char)b[i] : 0;
++            *(unsigned int *)(props + HIP_PROP_NODEMASK_OFFSET) = 1;
++            TRACE( "stamped device %d luid %s (env)\n", INT(1), luid );
++        }
++        else if (p->args[3])
++        {
++            memcpy( props + HIP_PROP_LUID_OFFSET, &p->args[2], 8 );
++            *(unsigned int *)(props + HIP_PROP_NODEMASK_OFFSET) = 1;
++            TRACE( "stamped device %d luid %#llx (dxgi)\n", INT(1), (unsigned long long)p->args[2] );
++        }
++    }
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipGetErrorName( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipGetErrorName );
++    p->ret = (ULONG_PTR)p_hipGetErrorName( INT(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipGetErrorString( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipGetErrorString );
++    p->ret = (ULONG_PTR)p_hipGetErrorString( INT(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipGetLastError( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipGetLastError );
++    p->ret = p_hipGetLastError();
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipHostFree( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipHostFree );
++    p->ret = p_hipHostFree( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipHostMalloc( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipHostMalloc );
++    p->ret = p_hipHostMalloc( PTR(0), SZ(1), UINT_ARG(2) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipImportExternalMemory( void *args )
++{
++    struct hip_params *p = args;
++    const struct hip_ext_mem_desc *desc = CPTR(1);
++    CHECK( hipImportExternalMemory );
++
++    /* the host runtime cannot import D3D12 handle types: shared d3dkmt
++     * objects carry the underlying dmabuf in the server, so retrieve it
++     * and import as an opaque fd instead (zero-copy interop) */
++    if (desc && (desc->type == HIP_EXT_MEM_OPAQUE_WIN32 || desc->type == HIP_EXT_MEM_D3D12_HEAP ||
++                 desc->type == HIP_EXT_MEM_D3D12_RESOURCE || desc->type == HIP_EXT_MEM_D3D11_RESOURCE) &&
++        desc->handle.win32.handle)
++    {
++        /* shared D3D12/D3D11 resources are D3DKMT objects; open the NT handle
++         * and pull its backing dmabuf fd. Fall back to a plain fd-backed handle. */
++        int fd = d3dkmt_handle_to_fd( desc->handle.win32.handle );
++        if (fd < 0)
++        {
++            NTSTATUS status = wine_server_handle_to_fd( desc->handle.win32.handle, GENERIC_ALL, &fd, NULL );
++            if (status) fd = -1;
++        }
++        if (fd >= 0)
++        {
++            struct hip_ext_mem_desc fixed = *desc;
++            fixed.type = HIP_EXT_MEM_OPAQUE_FD;
++            memset( &fixed.handle, 0, sizeof(fixed.handle) );
++            fixed.handle.fd = fd;
++            p->ret = p_hipImportExternalMemory( PTR(0), &fixed );
++            TRACE( "translated d3d type %d handle %p -> fd %d, size %llu: ret %u\n",
++                   desc->type, desc->handle.win32.handle, fd, desc->size, (unsigned int)p->ret );
++            if (p->ret) close( fd );  /* on success the runtime owns the fd */
++            return STATUS_SUCCESS;
++        }
++        WARN( "no unix fd behind shared handle %p\n", desc->handle.win32.handle );
++    }
++
++    p->ret = p_hipImportExternalMemory( PTR(0), CPTR(1) );
++    if (p->ret) WARN( "hipImportExternalMemory failed (%u)\n", (unsigned int)p->ret );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipInit( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipInit );
++    p->ret = p_hipInit( UINT_ARG(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipLaunchKernel( void *args )
++{
++    struct hip_params *p = args;
++    struct dim3 grid = { UINT_ARG(1), UINT_ARG(2), UINT_ARG(3) };
++    struct dim3 block = { UINT_ARG(4), UINT_ARG(5), UINT_ARG(6) };
++    CHECK( hipLaunchKernel );
++    p->ret = p_hipLaunchKernel( CPTR(0), grid, block, PTR(7), SZ(8), PTR(9) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMalloc( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMalloc );
++    p->ret = p_hipMalloc( PTR(0), SZ(1) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMemcpy( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMemcpy );
++    p->ret = p_hipMemcpy( PTR(0), CPTR(1), SZ(2), INT(3) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMemcpyAsync( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMemcpyAsync );
++    p->ret = p_hipMemcpyAsync( PTR(0), CPTR(1), SZ(2), INT(3), PTR(4) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMemcpyFromSymbol( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMemcpyFromSymbol );
++    p->ret = p_hipMemcpyFromSymbol( PTR(0), CPTR(1), SZ(2), SZ(3), INT(4) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMemcpyToSymbol( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMemcpyToSymbol );
++    p->ret = p_hipMemcpyToSymbol( CPTR(0), CPTR(1), SZ(2), SZ(3), INT(4) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMemset( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMemset );
++    p->ret = p_hipMemset( PTR(0), INT(1), SZ(2) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipMemsetAsync( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipMemsetAsync );
++    p->ret = p_hipMemsetAsync( PTR(0), INT(1), SZ(2), PTR(3) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipPeekAtLastError( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipPeekAtLastError );
++    p->ret = p_hipPeekAtLastError();
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipRuntimeGetVersion( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipRuntimeGetVersion );
++    p->ret = p_hipRuntimeGetVersion( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipSetDevice( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipSetDevice );
++    p->ret = p_hipSetDevice( INT(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipStreamCreate( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipStreamCreate );
++    p->ret = p_hipStreamCreate( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipStreamCreateWithFlags( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipStreamCreateWithFlags );
++    p->ret = p_hipStreamCreateWithFlags( PTR(0), UINT_ARG(1) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipStreamDestroy( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipStreamDestroy );
++    p->ret = p_hipStreamDestroy( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipStreamQuery( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipStreamQuery );
++    p->ret = p_hipStreamQuery( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS uf_hipStreamSynchronize( void *args )
++{
++    struct hip_params *p = args;
++    CHECK( hipStreamSynchronize );
++    p->ret = p_hipStreamSynchronize( PTR(0) );
++    return STATUS_SUCCESS;
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    hip_attach,
++    uf___hipPopCallConfiguration,
++    uf___hipPushCallConfiguration,
++    uf___hipRegisterFatBinary,
++    uf___hipRegisterFunction,
++    uf___hipRegisterVar,
++    uf___hipUnregisterFatBinary,
++    uf_hipDestroyExternalMemory,
++    uf_hipDeviceGetAttribute,
++    uf_hipDeviceSynchronize,
++    uf_hipDriverGetVersion,
++    uf_hipEventCreate,
++    uf_hipEventCreateWithFlags,
++    uf_hipEventDestroy,
++    uf_hipEventElapsedTime,
++    uf_hipEventQuery,
++    uf_hipEventRecord,
++    uf_hipEventSynchronize,
++    uf_hipExternalMemoryGetMappedBuffer,
++    uf_hipFree,
++    uf_hipGetDevice,
++    uf_hipGetDeviceCount,
++    uf_hipGetDevicePropertiesR0600,
++    uf_hipGetErrorName,
++    uf_hipGetErrorString,
++    uf_hipGetLastError,
++    uf_hipHostFree,
++    uf_hipHostMalloc,
++    uf_hipImportExternalMemory,
++    uf_hipInit,
++    uf_hipLaunchKernel,
++    uf_hipMalloc,
++    uf_hipMemcpy,
++    uf_hipMemcpyAsync,
++    uf_hipMemcpyFromSymbol,
++    uf_hipMemcpyToSymbol,
++    uf_hipMemset,
++    uf_hipMemsetAsync,
++    uf_hipPeekAtLastError,
++    uf_hipRuntimeGetVersion,
++    uf_hipSetDevice,
++    uf_hipStreamCreate,
++    uf_hipStreamCreateWithFlags,
++    uf_hipStreamDestroy,
++    uf_hipStreamQuery,
++    uf_hipStreamSynchronize,
++};
++
++C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+diff --git a/dlls/amdhip64_7/unixlib.h b/dlls/amdhip64_7/unixlib.h
+new file mode 100644
+index 00000000000..75fca8e12fc
+--- /dev/null
++++ b/dlls/amdhip64_7/unixlib.h
+@@ -0,0 +1,85 @@
++/*
++ * AMD HIP runtime bridge - shared PE/unix interface
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_AMDHIP64_7_UNIXLIB_H
++#define __WINE_AMDHIP64_7_UNIXLIB_H
++
++#include "windef.h"
++#include "wine/unixlib.h"
++
++/* hipError_t 999 = hipErrorUnknown, returned when the host symbol is missing */
++#define HIP_ERROR_UNKNOWN 999
++
++struct hip_params
++{
++    UINT64 args[12];
++    UINT64 ret;
++};
++
++enum hip_func
++{
++    unix_hip_attach,
++    unix___hipPopCallConfiguration,
++    unix___hipPushCallConfiguration,
++    unix___hipRegisterFatBinary,
++    unix___hipRegisterFunction,
++    unix___hipRegisterVar,
++    unix___hipUnregisterFatBinary,
++    unix_hipDestroyExternalMemory,
++    unix_hipDeviceGetAttribute,
++    unix_hipDeviceSynchronize,
++    unix_hipDriverGetVersion,
++    unix_hipEventCreate,
++    unix_hipEventCreateWithFlags,
++    unix_hipEventDestroy,
++    unix_hipEventElapsedTime,
++    unix_hipEventQuery,
++    unix_hipEventRecord,
++    unix_hipEventSynchronize,
++    unix_hipExternalMemoryGetMappedBuffer,
++    unix_hipFree,
++    unix_hipGetDevice,
++    unix_hipGetDeviceCount,
++    unix_hipGetDevicePropertiesR0600,
++    unix_hipGetErrorName,
++    unix_hipGetErrorString,
++    unix_hipGetLastError,
++    unix_hipHostFree,
++    unix_hipHostMalloc,
++    unix_hipImportExternalMemory,
++    unix_hipInit,
++    unix_hipLaunchKernel,
++    unix_hipMalloc,
++    unix_hipMemcpy,
++    unix_hipMemcpyAsync,
++    unix_hipMemcpyFromSymbol,
++    unix_hipMemcpyToSymbol,
++    unix_hipMemset,
++    unix_hipMemsetAsync,
++    unix_hipPeekAtLastError,
++    unix_hipRuntimeGetVersion,
++    unix_hipSetDevice,
++    unix_hipStreamCreate,
++    unix_hipStreamCreateWithFlags,
++    unix_hipStreamDestroy,
++    unix_hipStreamQuery,
++    unix_hipStreamSynchronize,
++    unix_funcs_count
++};
++
++#endif /* __WINE_AMDHIP64_7_UNIXLIB_H */
+diff --git a/configure.ac b/configure.ac
+index 7434ef9323b..813efda9f65 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2529,6 +2529,7 @@ WINE_CONFIG_MAKEFILE(dlls/advpack)
+ WINE_CONFIG_MAKEFILE(dlls/advpack/tests)
+ WINE_CONFIG_MAKEFILE(dlls/amsi)
+ WINE_CONFIG_MAKEFILE(dlls/amd_ags_x64)
++WINE_CONFIG_MAKEFILE(dlls/amdhip64_7)
+ WINE_CONFIG_MAKEFILE(dlls/amdxc64)
+ WINE_CONFIG_MAKEFILE(dlls/amstream)
+ WINE_CONFIG_MAKEFILE(dlls/amstream/tests)
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+index 38f7a53c3fb..8d308e34b03 100644
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -1936,7 +1936,7 @@ static void get_resource_global_keyed_mutex( struct d3dkmt_dxgi_desc *desc, D3DK
+ }
+ 
+ /* get a locally opened D3DKMT object host-specific fd */
+-int d3dkmt_object_get_fd( D3DKMT_HANDLE local )
++__attribute__((visibility("default"))) int d3dkmt_object_get_fd( D3DKMT_HANDLE local )
+ {
+     struct d3dkmt_object *object;
+     NTSTATUS status;
+@@ -1981,7 +1981,7 @@ failed:
+ }
+ 
+ /* open a D3DKMT global or shared resource */
+-D3DKMT_HANDLE d3dkmt_open_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local, D3DKMT_HANDLE *sync_local )
++__attribute__((visibility("default"))) D3DKMT_HANDLE d3dkmt_open_resource( D3DKMT_HANDLE global, HANDLE shared, D3DKMT_HANDLE *mutex_local, D3DKMT_HANDLE *sync_local )
+ {
+     struct d3dkmt_object *allocation = NULL, *mutex = NULL, *sync = NULL;
+     UINT runtime_size, mutex_size = 0, sync_size = 0;
+-- 
+2.47.0

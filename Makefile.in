@@ -1107,6 +1107,37 @@ $(DIST_MEDIA):
 all-dist: $(DIST_MEDIA)
 
 ##
+## ROCm HIP runtime, for the amdhip64_7 bridge
+##
+## The bridge is a shim: it forwards to the real runtime, which it looks for
+## beside itself first. Bundling is not a convenience -- the Steam Runtime
+## container ships neither libnuma nor libelf, both needed by libhsa-runtime64,
+## and it will not share /opt/rocm because Debian points that at
+## /etc/alternatives, which the container framework reserves. Copied here the
+## libraries travel together and their $ORIGIN runpath resolves the set.
+##
+## Skipped silently when the build host has no ROCm; the deployer then refuses
+## to activate rather than inject a pass that cannot start.
+##
+
+ROCM_LIBS := libamdhip64.so.7 libhsa-runtime64.so.1 librocprofiler-register.so.0 libamd_comgr.so.3
+
+## Phony: a directory target would be satisfied by its own mkdir, so a build
+## that skipped the copies once would never retry them.
+DIST_ROCM := $(DST_LIBDIR)/rocm
+.PHONY: dist-rocm
+dist-rocm:
+	mkdir -p $(DIST_ROCM)
+	if [ -n "$(ROCM_LIBDIR)" ] && [ -e "$(ROCM_LIBDIR)/libamdhip64.so.7" ]; then \
+	    for lib in $(ROCM_LIBS); do cp -L "$(ROCM_LIBDIR)/$$lib" "$(DIST_ROCM)/$$lib"; done; \
+	    if [ -n "$(NUMA_LIB)" ]; then cp -L "$(NUMA_LIB)" "$(DIST_ROCM)/libnuma.so.1"; fi; \
+	else \
+	    echo "no ROCm on the build host, skipping the HIP runtime bundle"; \
+	fi
+
+all-dist: dist-rocm
+
+##
 ## Fonts
 ##
 
@@ -1778,6 +1809,29 @@ module: module32 module64
 ###############################
 else # outside of the container
 ###############################
+
+##
+## ROCm HIP runtime for the amdhip64_7 bridge, resolved host-side.
+##
+## dist re-invokes make inside the build container, and everything above is
+## parsed only there, so the paths have to be resolved out here and bound in.
+## /opt/rocm is followed first: on Debian it points at /etc/alternatives, which
+## no container will share. libnuma is bound as a single file -- binding its
+## directory would shadow the container's own /usr/lib and break the build.
+##
+ifeq ($(ROCM_LIBDIR),)
+ROCM_LIBDIR := $(realpath /opt/rocm/lib)
+endif
+ifeq ($(NUMA_LIB),)
+NUMA_LIB := $(shell ldconfig -p 2>/dev/null | awk '/libnuma\.so\.1 / {print $$NF; exit}')
+endif
+ifneq ($(ROCM_LIBDIR),)
+export ROCM_LIBDIR
+override DOCKER_OPTS := -v $(ROCM_LIBDIR):$(ROCM_LIBDIR)$(CONTAINER_MOUNT_OPTS) \
+                        $(if $(NUMA_LIB),-v $(NUMA_LIB):/tmp/libnuma.so.1$(CONTAINER_MOUNT_OPTS)) \
+                        -e ROCM_LIBDIR=$(ROCM_LIBDIR) \
+                        $(if $(NUMA_LIB),-e NUMA_LIB=/tmp/libnuma.so.1) $(DOCKER_OPTS)
+endif
 
 J := $(shell nproc)
 

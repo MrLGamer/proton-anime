@@ -108,6 +108,12 @@ Requirements: `git`, `make`, `fontforge`, and a container engine (`docker` or `p
 The build itself runs inside Valve's Steam Runtime SDK container. Expect the sources and
 build to take a lot of disk space and the first build to take a long time.
 
+On this branch the build also needs **ROCm installed on the build host**, because the HIP
+runtime the `amdhip64_7` bridge forwards to is copied into the finished runner: the Steam
+Runtime container ships neither `libnuma` nor `libelf`, which it depends on. `/opt/rocm` is
+located automatically. Without it the build still succeeds, but DLSS 5 Neural Rendering is
+left out and `PROTON_ENABLE_DLSS5_AMD_OPTISCALER` will decline to activate.
+
 ```sh
 # 1. Clone the repository and fetch the submodules (several GB)
 git clone https://github.com/MrLGamer/proton-anime
