@@ -11,7 +11,7 @@ diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
 index 53b58ad13794..ee8cc9190de8 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -3498,6 +3498,48 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
+@@ -3498,6 +3498,55 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
  }
  
  
@@ -23,6 +23,7 @@ index 53b58ad13794..ee8cc9190de8 100644
 +BOOL load_dll_optiscaler_hack(LPCWSTR name, LPWSTR override, DWORD size)
 +{
 +    static WCHAR dllW[32] = {0};
++    static WCHAR dirW[260] = {0};
 +    static INT cached = -1;
 +    UNICODE_STRING overrideW;
 +    OBJECT_ATTRIBUTES attr;
@@ -33,11 +34,17 @@ index 53b58ad13794..ee8cc9190de8 100644
 +    if ( cached == -1 ) {
 +        cached = get_env( L"WINE_OPTISCALER_NAME", dllW, sizeof(dllW));
 +        if ( !cached ) return FALSE;
++        /* Optional directory of its own, so a second OptiScaler can be injected
++         * without sharing the first one's folder, ini or companion dlls. */
++        get_env( L"WINE_OPTISCALER_DIR", dirW, sizeof(dirW) );
 +    }
 +
 +    if ( cached && !_wcsicmp( name, dllW ) )
 +    {
-+        swprintf( override, size, L"\\??\\c:\\windows\\system32\\umu\\%s", dllW );
++        if ( dirW[0] )
++            swprintf( override, size, L"\\??\\%s\\%s", dirW, dllW );
++        else
++            swprintf( override, size, L"\\??\\c:\\windows\\system32\\umu\\%s", dllW );
 +        if ( cached != 2 )
 +        {
 +            RtlInitUnicodeString( &overrideW, override );
@@ -69,7 +76,7 @@ index 53b58ad13794..ee8cc9190de8 100644
  
      TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
  
-@@ -3521,7 +3565,9 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
+@@ -3521,8 +3565,10 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
  
      if (nts)
      {

@@ -1,0 +1,298 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 10 Sep 2026 00:00:00 +0200
+Subject: [PATCH] protonfixes: add DLSS 5 AMD OptiScaler downloader
+
+A third-party experimental OptiScaler fork whose AMD path runs DLSS 5
+Neural Rendering on a private HIP runtime before super resolution and at
+render resolution, instead of after the upscale, i.e.
+
+```
+PROTON_ENABLE_DLSS5_AMD_OPTISCALER=1 %command%
+```
+
+Tracks the newest release, a tag instead of `1` pins one. Releases
+carrying only a 7z are skipped: upstream stopped shipping them after
+v1.6 and unpacking one needs a tool that is not a dependency here. A
+release is deployed whole, which is what keeps the OptiScaler dll and
+the pass dlls it SHA256-checks in step.
+
+Everything lives in `system32/umu/dlss5_amd`, and WINE_OPTISCALER_DIR
+points the loader at it, so it shares nothing with the OptiScaler
+`setup_upscalers` deploys -- not the injected dll, not the ini, not the
+companion libraries. The NGX snippet is staged into that folder too
+rather than through the `dlss` flag, which installs into umu; without
+one OptiScaler finds no nvngx, turns spoofing off, and the game never
+offers DLSS for the pass to intercept. Turning it off leaves nothing
+behind elsewhere and the folder can be deleted.
+
+It refuses to activate rather than claim the injected dll for a pass that
+cannot start: the runner must carry both the amdhip64_7 bridge and the
+HIP runtime bundled beside it.
+---
+ __init__.py |   2 +
+ dlss5amd.py | 234 ++++++++++++++++++++++++++++++++
+ 2 files changed, 236 insertions(+)
+ create mode 100644 dlss5amd.py
+
+diff --git a/__init__.py b/__init__.py
+--- a/__init__.py
++++ b/__init__.py
+@@ -10,6 +10,7 @@ from .logger import log
+ from .upscalers import setup_upscalers
+ from .xxmi import setup_xxmi
+ from .reshade import setup_reshade
++from .dlss5amd import setup_dlss5amd
+ from .utilities import (
+     check_verb_requirements,
+     setup_frame_rate,
+@@ -119,6 +120,7 @@ def execute() -> None:
+ __all__ = [
+     'setup',
+     'execute',
++    'setup_dlss5amd',
+     'setup_frame_rate',
+     'setup_local_shader_cache',
+     'setup_mount_drives',
+diff --git a/dlss5amd.py b/dlss5amd.py
+new file mode 100644
+--- /dev/null
++++ b/dlss5amd.py
+@@ -0,0 +1,234 @@
++"""Deploy the DLSS 5 AMD pre-SR OptiScaler into the wine prefix
++
++A third-party experimental OptiScaler fork whose AMD path runs DLSS 5 Neural
++Rendering on a private HIP runtime before super resolution and at render
++resolution, rather than after the upscale. Released as one self-contained
++archive by MatheusGViana/dlss-5-amd-project.
++
++Everything it installs lives in `system32/umu/dlss5_amd`: the OptiScaler build,
++its ini, the private runtime, the weights, and the NGX snippet it needs. The
++loader is pointed at that folder with WINE_OPTISCALER_DIR, so this shares
++nothing with the OptiScaler `setup_upscalers` deploys -- not the injected dll,
++not the ini, not the companion libraries. Turning it off leaves nothing behind
++anywhere else, and the folder can simply be deleted.
++
++The runner must carry the amdhip64_7 bridge. The pass dlls load it by name and
++the engine refuses to initialise without it, so this refuses to activate rather
++than take the injected dll away from a pass that cannot start.
++"""
++
++import json
++import os
++import re
++import shutil
++import urllib.request
++import zipfile
++from pathlib import Path
++
++from .logger import log
++from .config import config
++from .xxmi import (
++    __get_tracked_versions as get_tracked_versions,
++    __set_tracked_versions as set_tracked_versions,
++)
++from .upscalers import (
++    __get_dll_manifest as get_dll_manifest,
++    __download_extract_zip as download_extract_zip,
++)
++
++__repo = 'MatheusGViana/dlss-5-amd-project'
++__root = 'dlss5_amd'
++__key = 'dlss5amd'
++
++
++def __resolve_release(version: str) -> tuple[str, str, str]:
++    """Return (tag, download url, file name), newest first when unpinned.
++
++    Releases carrying only a 7z are skipped rather than failed on: unpacking one
++    needs a tool that is not a dependency here, and upstream stopped shipping
++    them after v1.6. A pin naming such a release still raises.
++    """
++    if version == 'latest':
++        url = f'https://api.github.com/repos/{__repo}/releases'
++    else:
++        url = f'https://api.github.com/repos/{__repo}/releases/tags/{version}'
++    with urllib.request.urlopen(url, timeout=10) as fd:
++        payload = json.loads(fd.read().decode('utf-8'))
++    for release in payload if isinstance(payload, list) else [payload]:
++        for asset in release.get('assets', []):
++            if asset['name'].lower().endswith('.zip'):
++                return release['tag_name'], asset['browser_download_url'], asset['name']
++    raise RuntimeError(f'no release with a zip asset for "{version}"')
++
++
++def __cached_download(tag: str, url: str, name: str) -> Path:
++    cache_dir = config.path.cache_dir.joinpath('dlss5amd')
++    cache_dir.mkdir(parents=True, exist_ok=True)
++    cached_file = cache_dir.joinpath(f'{tag}-{name}')
++    if cached_file.is_file() and zipfile.is_zipfile(cached_file):
++        return cached_file
++    log.info(f'Downloading "{url}" (this one is large)')
++    tmp_file = cached_file.with_suffix('.tmp')
++    with urllib.request.urlopen(url, timeout=30) as url_fd:
++        with tmp_file.open('wb') as tmp_fd:
++            shutil.copyfileobj(url_fd, tmp_fd)
++    if not zipfile.is_zipfile(tmp_file):
++        tmp_file.unlink(missing_ok=True)
++        raise RuntimeError('downloaded asset is not a zip')
++    tmp_file.rename(cached_file)
++    return cached_file
++
++
++def __set_ini_key(ini: Path, section: str, key: str, value: str) -> None:
++    """Set one key in an existing section, appending it if absent."""
++    text = ini.read_text(encoding='utf-8', errors='ignore')
++    match = re.search(rf'\[{section}\](.*?)(?=\n\[|\Z)', text, re.S)
++    if match is None:
++        text = text.rstrip('\n') + f'\n\n[{section}]\n{key}={value}\n'
++    else:
++        body = match.group(1)
++        if re.search(rf'(?im)^{key}\s*=', body):
++            # A callable replacement is used verbatim; a string one would have
++            # its backslashes read as escapes, and values here can be paths.
++            body = re.sub(rf'(?im)^{key}\s*=.*$', lambda _: f'{key}={value}', body)
++        else:
++            body = body.rstrip('\n') + f'\n{key}={value}\n'
++        text = text[: match.start(1)] + body + text[match.end(1) :]
++    ini.write_text(text, encoding='utf-8')
++
++
++def __runner_root() -> Path:
++    """The runner this module was bundled with.
++
++    Protonfixes ships inside each runner, so this file's own path identifies the
++    one in use; the environment is only a fallback for an out-of-tree install.
++    """
++    for root in [Path(__file__).resolve().parent.parent] + [
++        Path(r) for r in (os.environ.get('PROTONPATH', ''),
++                          os.environ.get('PROTON_DIST_PATH', '')) if r
++    ]:
++        if root.joinpath('files', 'lib').is_dir():
++            return root.joinpath('files')
++        if root.joinpath('lib').is_dir():
++            return root
++    return Path(__file__).resolve().parent.parent.joinpath('files')
++
++
++def __has_bridge() -> bool:
++    """Whether this runner carries the amdhip64_7 bridge."""
++    lib = __runner_root().joinpath('lib', 'wine')
++    return any(lib.joinpath(arch, 'amdhip64_7.dll').is_file()
++               for arch in ('x86_64-windows', 'i386-windows'))
++
++
++def __has_rocm() -> bool:
++    """Whether the HIP runtime the bridge forwards to was bundled with it.
++
++    Host ROCm is not usable from here: the container ships neither libnuma nor
++    libelf, which libhsa-runtime64 needs, and it refuses to share /opt/rocm at
++    all on distributions that point it at /etc/alternatives. The build stages a
++    copy into the runner instead, and the bridge finds it beside itself.
++    """
++    return __runner_root().joinpath('lib', 'rocm', 'libamdhip64.so.7').is_file()
++
++
++def __stage_snippet(dest: Path) -> None:
++    """Put an NGX snippet beside the build, where OptiScaler looks for it.
++
++    Without one it finds no nvngx at all, turns spoofing off, and the game never
++    offers DLSS for the pass to intercept. Fetched here rather than through the
++    'dlss' compat flag, which installs into umu and would leave a file outside
++    this folder. The download is shared with that flag's cache, so a prefix that
++    already has DLSS staged pays nothing.
++    """
++    snippet = dest.joinpath('nvngx_dlss.dll')
++    if snippet.is_file():
++        return
++    item = get_dll_manifest('dlss', 'default')
++    download_extract_zip(item, config.path.cache_dir.joinpath('upscalers'), snippet)
++    log.info(f'Staged DLSS "{item["version"]}" beside the DLSS 5 AMD OptiScaler')
++
++
++def setup_dlss5amd(compat_config: set, env: dict, compat_dir: str, prefix_dir: str) -> None:
++    """usage: setup_dlss5amd(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)"""
++    dest = Path(prefix_dir).joinpath('drive_c', 'windows', 'system32', 'umu', __root)
++
++    # Nothing of ours lives outside that folder, so switching away needs no
++    # undoing: the stock OptiScaler's own files were never touched.
++    if __key not in compat_config:
++        return
++
++    if not __has_bridge():
++        log.warn(
++            'PROTON_ENABLE_DLSS5_AMD_OPTISCALER: this runner carries no amdhip64_7 '
++            'bridge, so the neural pass cannot start; leaving OptiScaler alone'
++        )
++        compat_config.discard(__key)
++        return
++
++    if not __has_rocm():
++        log.warn(
++            'PROTON_ENABLE_DLSS5_AMD_OPTISCALER: this runner bundles no HIP '
++            'runtime for the bridge to forward to, so the neural pass cannot '
++            'start; it needs a build made on a host with ROCm installed. '
++            'Leaving OptiScaler alone'
++        )
++        compat_config.discard(__key)
++        return
++
++    if 'optiscaler' in compat_config:
++        log.warn(
++            'PROTON_ENABLE_DLSS5_AMD_OPTISCALER and PROTON_USE_OPTISCALER both set; '
++            'they claim the same dll, using the DLSS 5 AMD build'
++        )
++        compat_config.discard('optiscaler')
++
++    tracked = get_tracked_versions(compat_dir)
++    deployed = tracked.get(__key)
++    pin = env.get('PROTON_ENABLE_DLSS5_AMD_OPTISCALER', '1')
++    wanted = 'latest' if pin in ('1', '') else pin
++
++    try:
++        try:
++            version, url, name = __resolve_release(wanted)
++        except Exception as e:
++            # An unreachable feed must not break a launch that already works.
++            if not deployed or not dest.is_dir():
++                raise
++            log.warn(f'Could not read the release feed, keeping "{deployed}"')
++            log.warn(e)
++            version, url, name = deployed, '', ''
++
++        fresh = deployed != version or not dest.is_dir()
++        if fresh:
++            archive = __cached_download(version, url, name)
++            if dest.is_dir():
++                shutil.rmtree(dest)
++            dest.mkdir(parents=True, exist_ok=True)
++            log.info(f'Deploying the DLSS 5 AMD OptiScaler "{version}"')
++            with zipfile.ZipFile(archive) as zip_fd:
++                zip_fd.extractall(dest)
++
++        __stage_snippet(dest)
++
++        # The archive ships the build as OptiScaler.dll; the loader wants the
++        # name the game asks for. Both stay inside this folder.
++        opti = env.get('PROTON_OPTISCALER_NAME', 'dxgi.dll')
++        target = dest.joinpath(opti)
++        if target.is_symlink() or target.is_file():
++            target.unlink()
++        shutil.copy2(dest.joinpath('OptiScaler.dll'), target)
++
++        if fresh:
++            # Shipped off since 1.7, and running it is the point of the variable.
++            # Only on a fresh deploy: switching the pass off in the menu must stick.
++            __set_ini_key(dest.joinpath('OptiScaler.ini'), 'DlssNr', 'Enabled', 'true')
++
++        tracked[__key] = version
++        set_tracked_versions(compat_dir, tracked)
++        env['WINE_OPTISCALER_NAME'] = opti
++        env['WINE_OPTISCALER_DIR'] = f'c:\\windows\\system32\\umu\\{__root}'
++        log.info(f'DLSS 5 AMD OptiScaler "{version}" injected as {opti} from {__root}')
++    except Exception as e:
++        log.crit('Failed to deploy the DLSS 5 AMD OptiScaler')
++        log.crit(e)
+-- 
+2.51.0
+
