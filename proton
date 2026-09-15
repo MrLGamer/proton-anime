@@ -866,7 +866,7 @@ class CompatData:
             # "GE-Proton11-11". Treat a GE release as major.0 with its release
             # number as the prefix revision, so GE11-x vs 11.0 isn't a downgrade.
             m = re.fullmatch(r'(?:.*-)?(\d+)\.(\d+)-(?:GE-)?(\d+)', ver) or \
-                re.fullmatch(r'GE-Proton(\d+)()-(\d+)', ver)
+                re.fullmatch(r'(?:GE|Anime)-Proton(\d+)()-(\d+)', ver)
             if not m:
                 raise ValueError("unrecognized prefix version " + ver)
             return m.group(1), m.group(2) or "0", m.group(3)

@@ -3,7 +3,7 @@
 set -eu
 
 SRCDIR="$(dirname "$0")"
-DEFAULT_BUILD_NAME="proton-localbuild" # If no --build-name specified
+DEFAULT_BUILD_NAME="anime-proton-localbuild" # If no --build-name specified
 
 # Output helpers
 COLOR_ERR=""
