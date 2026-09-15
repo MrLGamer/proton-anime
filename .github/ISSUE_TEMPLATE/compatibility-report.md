@@ -1,19 +1,19 @@
 ---
 name: Compatibility Report
-about: Game compatibility issues.
+about: Report an issue with a game from the supported games list.
 ---
 
-BEFORE FILING AN ISSUE PLEASE CHECK IF THE ISSUE OCCURS ON UPSTREAM PROTON-EXPERIMENTAL FIRST.
-IF IT HAPPENS ON PROTON-EXPERIMENTAL, YOU NEED TO FILE THE ISSUE UPSTREAM, NOT HERE.
+THIS ISSUE TRACKER ONLY COVERS THE GAMES LISTED IN THE SUPPORTED GAMES TABLE IN THE README.
 
-UPSTREAM BUG TRACKER:
-https://github.com/ValveSoftware/Proton/issues
-
-THE GE-PROTON ISSUE TRACKER IS FOR ISSUES THAT ONLY OCCUR ON GE-PROTON BUT WORK PROPERLY UPSTREAM, OR FOR FEATURES THAT ARE ONLY SPECIFIC TO GE-PROTON SUCH AS WINE-WAYLAND.
+IF YOUR GAME IS NOT ON THAT LIST, PLEASE OPEN A "GAME SUPPORT REQUEST" INSTEAD OF A COMPATIBILITY REPORT.
+FOR ISSUES WITH ANY OTHER GAME, PLEASE USE THE UPSTREAM PROJECTS INSTEAD:
+- GE-Proton: https://github.com/GloriousEggroll/proton-ge-custom/issues
+- Valve Proton: https://github.com/ValveSoftware/Proton/issues
 
 # Compatibility Report
-- Name of the game with compatibility issues:
-- Steam AppID of the game:
+- Name of the game (must be on the supported games list):
+- Steam AppID of the game (if on Steam):
+- Launcher used (Steam / umu / Lutris / Heroic / other):
 
 ## System Information
 - GPU: <!-- e.g. RX 580, RX 7900 XT, RTX 4070 -->
@@ -22,7 +22,7 @@ THE GE-PROTON ISSUE TRACKER IS FOR ISSUES THAT ONLY OCCUR ON GE-PROTON BUT WORK 
 - Distro version: <!-- e.g. Fedora 42, Bazzite, Arch, Nobara, Ubuntu 26.04 -->
 - Desktop session: <!-- e.g. KDE Wayland, GNOME Wayland, X11 -->
 - Link to full system information report as [Gist](https://gist.github.com/):
-- Proton version:
+- Proton-Anime version:
 
 ## Proton comparison
 <!-- Please test with a clean prefix where possible. If a game has DRM/anti-tamper limits, mention that. -->
@@ -39,14 +39,10 @@ THE GE-PROTON ISSUE TRACKER IS FOR ISSUES THAT ONLY OCCUR ON GE-PROTON BUT WORK 
 ```
 
 ## I confirm:
-- [ ] that I have verified my problem does NOT happen on proton-experimental and ONLY happens on GE-Proton
-- [ ] that I am NOT using the GE-Proton flatpak. (I do not build or provide the GE-Proton flatpak and it is known to have broken codec support.)
+- [ ] that the game is listed in the supported games table in the README.
 - [ ] that I haven't found an existing compatibility report for this game.
 - [ ] that I have checked whether there are updates for my system available.
 - [ ] that I have tested with a clean prefix or explained why I could not.
-
-For issues with the GE-Proton flatpak, report here:
-https://github.com/flathub/com.valvesoftware.Steam.CompatibilityTool.Proton-GE
 
 <!-- Please add `PROTON_LOG=1 %command%` to the game's launch options and drag
 and drop the generated `$HOME/steam-$APPID.log` into this issue report. -->
@@ -71,6 +67,4 @@ PROTON_LOG=1 WINEDEBUG="+seh,+dmo,+mfplat,+quartz,+strmbase,+mfreadwrite,+xaudio
 4. Please copy it to your clipboard by pressing `Ctrl+A` and then `Ctrl+C`.
    Then paste it in a [Gist](https://gist.github.com/) and post the link in
    this issue.
-5. Please search for open issues and pull requests by the name of the game and
-   find out whether they are relevant and should be referenced above.
 -->
