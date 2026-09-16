@@ -1,0 +1,174 @@
+From 8da8a2c1a9fd37ca69423e8146f8df8718125204 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Wed, 16 Sep 2026 22:55:43 +0200
+Subject: [PATCH] win32u: Prefer the X11 tray dock over SNI when the desktop can
+ host it
+
+GE's StatusNotifierItem tray exports no dbusmenu and expects the host to
+call ContextMenu, which GNOME's appindicator extension never does: the
+launcher icons show as a placeholder and right-click does nothing. On an
+X11 desktop that same extension hosts an XEmbed tray, where the classic
+explorer dock shows the icon and the app's own menu, as it did before SNI.
+
+Report SNI as unavailable when explorer runs on winex11 and the X11 tray
+selection has an owner. Wayland desktops keep SNI.
+---
+ dlls/win32u/driver.c         |  9 +++++++++
+ dlls/win32u/ntuser_private.h |  1 +
+ dlls/win32u/sni.c            | 11 +++++++++++
+ dlls/winex11.drv/window.c    | 29 +++++++++++++++++++++--------
+ include/ntuser.h             |  1 +
+ 5 files changed, 43 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index a1493750df..b40ec4e532 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -41,6 +41,7 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+ static const struct user_driver_funcs lazy_load_driver;
+ static struct user_driver_funcs null_user_driver;
+ static WCHAR driver_load_error[80];
++static BOOL desktop_driver_x11;
+ 
+ static INT nulldrv_AbortDoc( PHYSDEV dev )
+ {
+@@ -996,8 +997,10 @@ static BOOL load_desktop_driver( HWND hwnd )
+                                                   info->DataLength / sizeof(WCHAR) ));
+         if (info->DataLength != sizeof(nullW) || memcmp( info->Data, nullW, sizeof(nullW) ))
+         {
++            static const WCHAR x11W[] = {'w','i','n','e','x','1','1','.','d','r','v',0};
+             void *ret_ptr;
+             ULONG ret_len;
++            desktop_driver_x11 = info->DataLength == sizeof(x11W) && !wcsnicmp( (WCHAR *)info->Data, x11W, ARRAY_SIZE(x11W) );
+             ret = !KeUserModeCallback( NtUserLoadDriver, info->Data, info->DataLength, &ret_ptr, &ret_len );
+         }
+         else
+@@ -1016,6 +1019,12 @@ static BOOL load_desktop_driver( HWND hwnd )
+     return ret;
+ }
+ 
++/* whether the desktop process runs on winex11, i.e. explorer can dock XEmbed tray icons */
++BOOL desktop_driver_is_x11(void)
++{
++    return desktop_driver_x11;
++}
++
+ /**********************************************************************
+  * Lazy loading user driver
+  *
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index d5afdfaf94..704e806666 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -237,6 +237,7 @@ extern void sni_cleanup_icons( HWND owner );
+ extern void sni_run_loop( void );
+ extern BOOL sni_has_icons( void );
+ extern BOOL sni_is_available( void );
++extern BOOL desktop_driver_is_x11( void );
+ extern BOOL sni_get_context_menu_pos( POINT *pos );
+ extern BOOL sni_should_layer_context_menu( HWND hwnd, DWORD style, DWORD ex_style, const RECT *rect );
+ extern void sni_adjust_menu_position( HWND hwnd, INT *x, INT *y );
+diff --git a/dlls/win32u/sni.c b/dlls/win32u/sni.c
+index b0a00c27e6..608a9aaa03 100644
+--- a/dlls/win32u/sni.c
++++ b/dlls/win32u/sni.c
+@@ -1207,6 +1207,14 @@ static void update_icon( struct sni_icon *icon, NOTIFYICONDATAW *nid, BOOL *imag
+     }
+ }
+ 
++/* An X11 desktop with an XEmbed tray host shows the docked icon with a working
++ * context menu, while GNOME's SNI host only drives dbusmenu, which is not exported. */
++static BOOL x11_dock_preferred(void)
++{
++    if (!desktop_driver_is_x11()) return FALSE;
++    return !!user_driver->pWindowMessage( 0, WM_WINE_SYSTRAY_DOCK_AVAILABLE, 0, 0 );
++}
++
+ /***********************************************************************
+  *   sni_notify_icon
+  *
+@@ -1220,6 +1228,8 @@ LRESULT sni_notify_icon( HWND owner, UINT msg, NOTIFYICONDATAW *nid )
+     struct sni_icon *icon, *target = NULL;
+     LRESULT ret = -1;
+ 
++    if (x11_dock_preferred()) return -1;
++
+     pthread_mutex_lock( &sni_mutex );
+     if (!sni_init_done) sni_init();
+     /* the watcher may have started after us. Re-probe on a fresh NIM_ADD rather
+@@ -1535,6 +1545,7 @@ BOOL sni_has_icons( void )
+ 
+ BOOL sni_is_available( void )
+ {
++    if (x11_dock_preferred()) return FALSE;
+     pthread_mutex_lock( &sni_mutex );
+     if (!sni_init_done) sni_init();
+     pthread_mutex_unlock( &sni_mutex );
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 9958838555..dd252bc5bb 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3338,6 +3338,19 @@ static struct x11drv_win_data *X11DRV_create_win_data( HWND hwnd, const struct w
+ }
+ 
+ 
++static void init_systray_atom( Display *display )
++{
++    if (systray_atom) return;
++    if (DefaultScreen( display ) == 0)
++        systray_atom = x11drv_atom(_NET_SYSTEM_TRAY_S0);
++    else
++    {
++        char systray_buffer[29]; /* strlen(_NET_SYSTEM_TRAY_S4294967295)+1 */
++        sprintf( systray_buffer, "_NET_SYSTEM_TRAY_S%u", DefaultScreen( display ) );
++        systray_atom = XInternAtom( display, systray_buffer, False );
++    }
++}
++
+ /***********************************************************************
+  *              SystrayDockInit   (X11DRV.@)
+  */
+@@ -3349,14 +3362,7 @@ void X11DRV_SystrayDockInit( HWND hwnd )
+ 
+     systray_hwnd = hwnd;
+     display = thread_init_display();
+-    if (DefaultScreen( display ) == 0)
+-        systray_atom = x11drv_atom(_NET_SYSTEM_TRAY_S0);
+-    else
+-    {
+-        char systray_buffer[29]; /* strlen(_NET_SYSTEM_TRAY_S4294967295)+1 */
+-        sprintf( systray_buffer, "_NET_SYSTEM_TRAY_S%u", DefaultScreen( display ) );
+-        systray_atom = XInternAtom( display, systray_buffer, False );
+-    }
++    init_systray_atom( display );
+     XSelectInput( display, root_window, StructureNotifyMask | PropertyChangeMask );
+     XFlush( display );
+ }
+@@ -4101,6 +4107,13 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+         return 0;
+     case WM_WINE_MAP_NOTIFY_ICON_POINT:
+         return 0;
++    case WM_WINE_SYSTRAY_DOCK_AVAILABLE:
++    {
++        Display *display = thread_init_display();
++        if (is_virtual_desktop()) return FALSE;
++        init_systray_atom( display );
++        return XGetSelectionOwner( display, systray_atom ) != None;
++    }
+     default:
+         FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp );
+         return 0;
+diff --git a/include/ntuser.h b/include/ntuser.h
+index b9d6a0ca43..46ce108f4d 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -657,6 +657,7 @@ enum wine_internal_message
+     WM_WINE_MAP_NOTIFY_ICON_POINT,
+     WM_WINE_SETWINDOWSURFACECLIP,
+     WM_WINE_DESTROY_ABANDONED_WINDOW,
++    WM_WINE_SYSTRAY_DOCK_AVAILABLE,
+     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
+     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
+     WM_WINE_SETCURSOR,
+-- 
+2.51.0
