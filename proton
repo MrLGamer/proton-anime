@@ -15,6 +15,8 @@ import stat
 import subprocess
 import sys
 import shlex
+import socket
+import threading
 import uuid
 import json
 import time
@@ -39,6 +41,99 @@ from ctypes import c_ssize_t
 from filelock import FileLock
 from random import randrange
 from pathlib import Path
+
+def _is_hoyoplay(exe_dir):
+    try:
+        return (os.path.isfile(os.path.join(exe_dir, "HYLauncher.dll"))
+                or any(os.path.isfile(os.path.join(exe_dir, d, "HYLauncher.dll"))
+                       for d in os.listdir(exe_dir)))
+    except OSError:
+        return False
+
+# Fill in UMU_ID for direct umu launches of known games so their protonfix
+# runs. Must happen before the protonfixes import resolves umu-default.
+def _route_umu_id():
+    if os.environ.get("UMU_ID") != "umu-default" or len(sys.argv) < 3:
+        return
+    exe = sys.argv[2].split(os.sep)[-1]
+    umu_id = {
+        "GenshinImpact.exe": "umu-genshin",
+        "ZenlessZoneZero.exe": "umu-zenlesszonezero",
+    }.get(exe)
+    if exe == "launcher.exe":
+        exe_dir = os.path.dirname(sys.argv[2])
+        if _is_hoyoplay(exe_dir):
+            # The games HoYoPlay spawns need the steam.exe AC launch fix
+            umu_id = "umu-zenlesszonezero"
+        else:
+            # Kuro launcher: versioned subdir with launcher_main.dll
+            try:
+                if any(os.path.isfile(os.path.join(exe_dir, d, "launcher_main.dll"))
+                        for d in os.listdir(exe_dir)):
+                    umu_id = "umu-3513350"
+            except OSError:
+                pass
+    if umu_id:
+        os.environ["UMU_ID"] = umu_id
+
+_route_umu_id()
+
+# The dispatch request these games make on startup has a ~1s budget covering
+# DNS, TCP, TLS and HTTP together, so a slow or lossy resolver alone can spend
+# it ("initDriver Failed"). Both DNS fixes below default on for the games in
+# _PREWARM_HOSTS and for HoYoPlay, which spawns those games itself.
+# Overridable via PROTON_DNS_RETRY / PROTON_DNS_PREWARM.
+_PREWARM_HOSTS = {
+    "GenshinImpact.exe": ("dispatchosglobal.yuanshen.com",
+                          "osusadispatch.yuanshen.com",
+                          "oseurodispatch.yuanshen.com",
+                          "osasiadispatch.yuanshen.com"),
+    "ZenlessZoneZero.exe": ("globaldp-prod-os01.zenlesszonezero.com",
+                            "globaldp-prod-os02.zenlesszonezero.com"),
+}
+_PREWARM_HOSTS["YuanShen.exe"] = _PREWARM_HOSTS["GenshinImpact.exe"]
+
+def _dns_fix_hosts():
+    if len(sys.argv) < 3:
+        return ()
+    exe = sys.argv[2].split(os.sep)[-1]
+    hosts = _PREWARM_HOSTS.get(exe)
+    if hosts:
+        return hosts
+    if exe == "launcher.exe" and _is_hoyoplay(os.path.dirname(sys.argv[2])):
+        return tuple(dict.fromkeys(
+            h for hs in _PREWARM_HOSTS.values() for h in hs))
+    return ()
+
+_DNS_FIX_HOSTS = _dns_fix_hosts()
+_DNS_FIX_DEFAULT = "1" if _DNS_FIX_HOSTS else "0"
+
+# Windows retries a lost DNS query after 1s, glibc waits 5s per attempt.
+# Match the Windows resolver cadence.
+if os.environ.get("PROTON_DNS_RETRY", _DNS_FIX_DEFAULT) != "0":
+    os.environ.setdefault("RES_OPTIONS", "timeout:1 attempts:3")
+
+# Resolve the hosts the game needs while it is still loading, so the answers
+# are cached upstream before it asks. Best effort: failures cost nothing.
+# PROTON_DNS_PREWARM may instead name the hosts to resolve, comma separated,
+# for games whose hosts aren't listed here.
+def _prewarm_dns():
+    setting = os.environ.get("PROTON_DNS_PREWARM", _DNS_FIX_DEFAULT)
+    if setting in ("0", ""):
+        return
+    if setting == "1":
+        hosts = _DNS_FIX_HOSTS
+    else:
+        hosts = tuple(h.strip() for h in setting.split(",") if h.strip())
+    def resolve(host):
+        try:
+            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        except OSError:
+            pass
+    for host in hosts:
+        threading.Thread(target=resolve, args=(host,), daemon=True).start()
+
+_prewarm_dns()
 
 import protonfixes
 
@@ -684,6 +779,56 @@ def get_replace_reg_value(file, key, name, new_value=None):
             pass
 
     return old_value
+
+def unlock_hsr_fps():
+    # Honkai: Star Rail's in-game menu caps FPS at 60, but the engine honors
+    # whatever is stored in the GraphicsSettings_Model registry JSON blob
+    fps = g_session.env.get("PROTON_HSR_FPS", "")
+    if not fps.isdigit() or int(fps) == 0:
+        return
+    reg_file = g_compatdata.prefix_dir + "user.reg"
+    if not file_exists(reg_file, follow_symlinks=True):
+        return
+    with open(reg_file, "r") as reg_in:
+        lines = reg_in.readlines()
+    out = []
+    patched = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if not line.startswith("\"GraphicsSettings_Model_"):
+            out.append(line)
+            continue
+        while line.rstrip("\r\n").endswith("\\") and i < len(lines):
+            line = line.rstrip("\r\n")[:-1] + lines[i].lstrip()
+            i += 1
+        line = line.rstrip("\r\n")
+        name, sep, data = line.partition("=hex:")
+        try:
+            blob = bytes.fromhex(data.replace(",", "").replace(" ", ""))
+        except ValueError:
+            sep = None
+        if not sep:
+            out.append(line + "\n")
+            continue
+        blob = re.sub(rb'"FPS":-?\d+', b'"FPS":' + fps.encode(), blob)
+        cur = name + "=hex:"
+        for j in range(len(blob)):
+            token = "%02x" % blob[j] + ("," if j < len(blob) - 1 else "")
+            if len(cur) + len(token) > 76:
+                out.append(cur + "\\\n")
+                cur = "  "
+            cur += token
+        out.append(cur + "\n")
+        patched = True
+    if not patched:
+        log("PROTON_HSR_FPS: no Star Rail graphics settings in the registry yet, launch the game once first")
+        return
+    with open(reg_file + ".new", "w") as reg_out:
+        reg_out.writelines(out)
+    os.replace(reg_file + ".new", reg_file)
+    log("PROTON_HSR_FPS: FPS limit set to " + fps)
 
 class Proton:
     def __init__(self, base_dir):
@@ -2820,6 +2965,8 @@ class Session:
         if umu_without_steam:
             append_to_env_str(self.env, "WINEDLLOVERRIDES", "lsteamclient=d", ";")
 
+        unlock_hsr_fps()
+
         if shutil.which('steam-runtime-launcher-interface-0') is not None:
             adverb = ['steam-runtime-launcher-interface-0', 'proton']
         else:
@@ -2919,6 +3066,11 @@ if __name__ == "__main__":
     protonfixes.setup_xxmi(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir, g_session.cmdlineappend)
     protonfixes.setup_reshade(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
     protonfixes.execute()
+    # The ZZZ gamefix HoYoPlay is routed to disables cross-process window
+    # rendering, which the launcher's out-of-process CEF GPU process needs
+    if (len(sys.argv) > 2 and os.path.basename(sys.argv[2]) == "launcher.exe"
+            and _is_hoyoplay(os.path.dirname(sys.argv[2]))):
+        g_session.env.pop("WINE_DISABLE_VULKAN_OPWR", None)
 
     g_compatdata.setup_ddraw("PROTON_USE_D7VK" in g_session.env
             and nonzero(g_session.env["PROTON_USE_D7VK"]))

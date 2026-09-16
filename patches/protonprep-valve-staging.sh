@@ -475,6 +475,8 @@ apply_all_in_dir() {
     echo "WINE: -PROTON-ANIME- HACK: kernelbase dxgi redirect for ReShade"
     apply_patch "../patches/proton/0003-HACK-kernelbase-redirect-dxgi-for-ReShade.patch"
 
+    # HSR hacks ported from https://repo.tukandev.com/TTL-extras/sparkle
+    echo "WINE: -PROTON-ANIME- HACK: HSR wintrust catalog stub + first-request block (StarRail.exe)"
     echo "WINE: -PROTON-ANIME- HACK: NTE hide-launcher mode (PROTON_NTE_HIDE_LAUNCHER=1)"
     apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
 

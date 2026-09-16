@@ -1,0 +1,112 @@
+From 6fac416d104af1df3439cf26ee02f2019b49b204 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 11 Sep 2026 22:30:00 +0200
+Subject: [PATCH] HACK: win32u: shape the sizing frame out of HoYoPlay's windows
+
+HYP.exe removes only the top sizing frame in WM_NCCALCSIZE and relies on
+DWM hiding the rest, which wine paints as a white frame instead. Cut the
+left, right and bottom frame out of the window region of its unowned
+top-level windows; the launcher does its own edge hit-testing anyway.
+Folding the frame into the client area instead breaks presentation from
+its out-of-process CEF GPU process when d3d11 runs on wined3d. The region
+is refreshed from WM_WINDOWPOSCHANGED too, since not every resize reaches
+DefWindowProc's WM_NCCALCSIZE.
+---
+ dlls/win32u/defwnd.c | 66 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+--- a/dlls/win32u/defwnd.c	2026-09-11 21:02:37.405638117 +0200
++++ b/dlls/win32u/defwnd.c	2026-09-11 21:02:37.406692359 +0200
+@@ -526,10 +526,13 @@
+     return 0;
+ }
+ 
++static void hyp_maybe_shape_frame( HWND hwnd );
++
+ static void handle_window_pos_changed( HWND hwnd, const WINDOWPOS *winpos )
+ {
+     RECT rect;
+ 
++    if (!(winpos->flags & SWP_NOSIZE) || (winpos->flags & SWP_FRAMECHANGED)) hyp_maybe_shape_frame( hwnd );
+     get_client_rect_rel( hwnd, COORDS_PARENT, &rect, get_thread_dpi() );
+     if (!(winpos->flags & SWP_NOCLIENTMOVE))
+         send_message( hwnd, WM_MOVE, 0, MAKELONG( rect.left, rect.top ));
+@@ -1885,6 +1888,65 @@
+     return TRUE;
+ }
+ 
++/* HACK: HYP.exe relies on DWM hiding the sizing frame it keeps in
++ * WM_NCCALCSIZE; wine would paint it as a white frame, so cut it out of
++ * the window region (the launcher does its own edge hit-testing). */
++static BOOL is_hoyoplay(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        static const WCHAR hyp_exeW[] = {'h','y','p','.','e','x','e',0};
++        const WCHAR *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer, *p;
++        WCHAR buffer[16];
++        unsigned int i;
++
++        if ((p = wcsrchr( name, '\\' ))) name = p + 1;
++        if ((p = wcsrchr( name, '/' ))) name = p + 1;
++        for (i = 0; i < ARRAY_SIZE(buffer) - 1 && name[i]; i++)
++            buffer[i] = RtlDowncaseUnicodeChar( name[i] );
++        buffer[i] = 0;
++        cached = !wcscmp( buffer, hyp_exeW );
++    }
++    return cached;
++}
++
++/* Shape the left/right/bottom sizing frame out of the window instead of
++ * folding it into the client area: a client rect equal to the window rect
++ * breaks wined3d presentation from HYP's out-of-process CEF GPU process. */
++static void hyp_shape_frame( HWND hwnd, const RECT *window_rect, DWORD style, DWORD ex_style )
++{
++    RECT frame = { 0, 0, 0, 0 };
++    HRGN rgn, cur;
++    int width = window_rect->right - window_rect->left, height = window_rect->bottom - window_rect->top;
++    BOOL same = FALSE;
++
++    adjust_window_rect( &frame, style, FALSE, ex_style & ~WS_EX_CLIENTEDGE, get_system_dpi() );
++    if (!(rgn = NtGdiCreateRectRgn( -frame.left, 0, width - frame.right, height - frame.bottom ))) return;
++    if ((cur = NtGdiCreateRectRgn( 0, 0, 0, 0 )))
++    {
++        same = NtUserGetWindowRgnEx( hwnd, cur, 0 ) != ERROR && NtGdiEqualRgn( rgn, cur );
++        NtGdiDeleteObjectApp( cur );
++    }
++    if (same) NtGdiDeleteObjectApp( rgn );
++    else if (!NtUserSetWindowRgn( hwnd, rgn, FALSE )) NtGdiDeleteObjectApp( rgn );
++}
++
++static void hyp_maybe_shape_frame( HWND hwnd )
++{
++    DWORD style, ex_style;
++    RECT rect;
++
++    if (!is_hoyoplay()) return;
++    style = get_window_long( hwnd, GWL_STYLE );
++    ex_style = get_window_long( hwnd, GWL_EXSTYLE );
++    if ((style & (WS_MINIMIZE | WS_CHILD)) || !(style & WS_THICKFRAME)) return;
++    if (get_window_relative( hwnd, GW_OWNER )) return;
++    if (!get_window_rect( hwnd, &rect, get_thread_dpi() )) return;
++    hyp_shape_frame( hwnd, &rect, style, ex_style );
++}
++
+ static void handle_nc_calc_size( HWND hwnd, WPARAM wparam, RECT *win_rect )
+ {
+     RECT rect = { 0, 0, 0, 0 };
+@@ -1893,6 +1955,10 @@
+ 
+     if (!win_rect) return;
+ 
++    if (!(style & (WS_MINIMIZE | WS_CHILD)) && (style & WS_THICKFRAME) && is_hoyoplay()
++        && !get_window_relative( hwnd, GW_OWNER ))
++        hyp_shape_frame( hwnd, win_rect, style, ex_style );
++
+     if (user_driver->pHasWindowManager( "steamcompmgr" ))
+     {
+         /* Disable gamescope undecorated windows hack for following games. They don't expect client
+-- 
+2.51.0
