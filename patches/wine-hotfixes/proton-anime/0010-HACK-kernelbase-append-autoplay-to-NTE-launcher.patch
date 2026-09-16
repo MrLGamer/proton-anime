@@ -1,0 +1,51 @@
+From 44df553ebc6e87ae2325521ef691a23a6e6ddff9 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 10 Jul 2026 12:00:00 +0200
+Subject: [PATCH] HACK: kernelbase: append /autoplay to the NTE launcher
+
+This appends /autoplay to NTEGlobalGame.exe's command
+line so the launcher starts the game by itself.
+---
+ dlls/kernelbase/process.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -623,6 +623,18 @@
+ 
+     if (!cmd) return NULL;
+ 
++    /* HACK: PROTON_NTE_HIDE_LAUNCHER=1 makes the NTE launcher (NTEGlobalGame.exe)
++     * auto-start the game by appending /autoplay to its command line. */
++    if (wcsstr( cmd, L"NTEGlobalGame.exe" ) && !wcsstr( cmd, L"/autoplay" ))
++    {
++        char buf[4];
++        if (GetEnvironmentVariableA( "PROTON_NTE_HIDE_LAUNCHER", buf, sizeof(buf) ) && buf[0] == '1')
++        {
++            FIXME( "HACK: appending /autoplay to NTE launcher command line.\n" );
++            return L" /autoplay";
++        }
++    }
++
+     for (i = 0; i < ARRAY_SIZE(options); ++i)
+     {
+         if (wcsstr( cmd, options[i].exe_name ))
+@@ -700,9 +712,12 @@
+     {
+         if (!cmd_line || !cmd_line[0]) /* no command-line, create one */
+         {
+-            if (!(tidy_cmdline = RtlAllocateHeap( GetProcessHeap(), 0, (lstrlenW(app_name)+3) * sizeof(WCHAR) )))
++            DWORD len = lstrlenW(app_name) + 3;
++            if ((append = hack_append_command_line( app_name ))) len += lstrlenW( append );
++            if (!(tidy_cmdline = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
+                 return FALSE;
+-            swprintf( tidy_cmdline, lstrlenW(app_name) + 3, L"\"%s\"", app_name );
++            swprintf( tidy_cmdline, len, L"\"%s\"", app_name );
++            if (append) lstrcatW( tidy_cmdline, append );
+         }
+         else if ((append = hack_append_command_line( app_name )))
+         {
+-- 
+2.51.0
+
