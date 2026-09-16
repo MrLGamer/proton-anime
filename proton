@@ -2312,6 +2312,7 @@ class Session:
         self.check_environment("PROTON_USE_ZZMI", "zzmi")
         self.check_environment("PROTON_USE_HIMI", "himi")
         self.check_environment("PROTON_USE_GIMI_DEV", "gimidev")
+        self.check_environment("PROTON_USE_RESHADE", "reshade")
 
         self.check_environment("PROTON_NATIVE_AGS", "nativeags")
         self.check_environment("PROTON_ENABLE_HDR", "hdr")
@@ -2916,6 +2917,7 @@ if __name__ == "__main__":
     g_session.check_environment("PROTON_USE_OPTISCALER", "optiscaler")
     protonfixes.setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
     protonfixes.setup_xxmi(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir, g_session.cmdlineappend)
+    protonfixes.setup_reshade(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
     protonfixes.execute()
 
     g_compatdata.setup_ddraw("PROTON_USE_D7VK" in g_session.env

@@ -472,6 +472,9 @@ apply_all_in_dir() {
     echo "WINE: -PROTON-ANIME- HACK: kernelbase d3d11 redirect for XXMI model importers"
     apply_patch "../patches/proton/0002-HACK-kernelbase-redirect-d3d11-for-XXMI-model-importers.patch"
 
+    echo "WINE: -PROTON-ANIME- HACK: kernelbase dxgi redirect for ReShade"
+    apply_patch "../patches/proton/0003-HACK-kernelbase-redirect-dxgi-for-ReShade.patch"
+
     apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
 
 ### END PROTON-ANIME CUSTOM PATCHES ###
