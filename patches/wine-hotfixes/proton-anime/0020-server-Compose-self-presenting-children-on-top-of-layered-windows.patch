@@ -1,0 +1,101 @@
+From 6c1f82c1273ed87a5b21f3abb9b7661f69202b6c Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:33 +0200
+Subject: [PATCH] server: Compose self-presenting children on top of layered windows
+
+On Windows 8 and later, child windows of an UpdateLayeredWindow() window
+are drawn on top of the layered content. Wine still does it the Windows 7
+way: layered windows get a 1x1 dummy surface rect and their children are
+clipped to it, so nothing they draw shows up.
+
+This leaves the Kuro launcher (Wuthering Waves, PGR) blank. It hosts
+WebView2 in a transparent WPF window, and the browser's GPU process draws
+into a child window that gets clipped away.
+
+Let children that present their own content draw on top. Only applies to
+Kuro's bundled WebView2 runtime.
+---
+ server/window.c |   42 +++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 39 insertions(+), 3 deletions(-)
+
+--- a/server/window.c
++++ b/server/window.c
+@@ -1290,6 +1290,21 @@
+ }
+ 
+ 
++/* set the region to the client rect a child window can be visible in, in parent-relative coordinates */
++static void set_region_parent_client_rect( struct region *region, struct window *win, int composed )
++{
++    struct rectangle rect;
++
++    intersect_rect( &rect, &win->window_rect, &win->client_rect );
++    /* since Windows 8 the children of an UpdateLayeredWindow() window are composed on top of
++     * its layered surface, so a child presenting its own content is not limited to the
++     * (dummy) surface rect of that window */
++    if (!composed || !(win->paint_flags & PAINT_HAS_LAYERED_SURFACE))
++        intersect_rect( &rect, &rect, &win->surface_rect );
++    set_region_rect( region, &rect );
++}
++
++
+ /* set the region to the visible rect clipped by the window surface, in parent-relative coordinates */
+ static void set_region_visible_rect( struct region *region, struct window *win )
+ {
+@@ -1401,13 +1416,34 @@
+ 
+ 
+ /* compute the visible region of a window, in window coordinates */
++/* Kuro's launcher hosts its WebView2 in a layered WPF window */
++static int is_kuro_webview_window( struct window *win )
++{
++    static const WCHAR markerW[] = {'K','R','W','e','b','V','i','e','w','R','u','n','t','i','m','e'};
++    const WCHAR *image;
++    data_size_t len, i;
++
++    if (!win->thread || !win->thread->process) return 0;
++    image = win->thread->process->image;
++    len = win->thread->process->imagelen / sizeof(WCHAR);
++    if (!image) return 0;
++    for (i = 0; i + 16 <= len; i++)
++        if (!memcmp( image + i, markerW, sizeof(markerW) )) return 1;
++    return 0;
++}
++
++
+ static struct region *get_visible_region( struct window *win, unsigned int flags )
+ {
+     struct region *tmp = NULL, *region;
+-    int offset_x, offset_y;
++    int offset_x, offset_y, composed;
+ 
+     if (!(region = create_empty_region())) return NULL;
+ 
++    /* windows that present their own content (client surfaces, other-process drawing) get
++     * composed on top of a layered ancestor instead of being hidden by its surface */
++    composed = window_has_self_presenting_content( win ) && is_kuro_webview_window( win );
++
+     /* first check if all ancestors are visible */
+ 
+     if (!is_visible( win )) return region;  /* empty region */
+@@ -1422,7 +1458,7 @@
+ 
+     if ((flags & DCX_PARENTCLIP) && !is_desktop_window( win->parent ))
+     {
+-        set_region_client_rect( region, win->parent );
++        set_region_parent_client_rect( region, win->parent, composed );
+         offset_region( region, -win->parent->client_rect.left, -win->parent->client_rect.top );
+     }
+     else if (flags & DCX_WINDOW)
+@@ -1463,7 +1499,7 @@
+             offset_x += win->client_rect.left;
+             offset_y += win->client_rect.top;
+             offset_region( region, win->client_rect.left, win->client_rect.top );
+-            set_region_client_rect( tmp, win );
++            set_region_parent_client_rect( tmp, win, composed );
+             if (win->win_region && !intersect_window_region( tmp, win )) goto error;
+             if (!intersect_region( region, region, tmp )) goto error;
+             if (is_region_empty( region )) break;
+-- 
+2.51.0
+

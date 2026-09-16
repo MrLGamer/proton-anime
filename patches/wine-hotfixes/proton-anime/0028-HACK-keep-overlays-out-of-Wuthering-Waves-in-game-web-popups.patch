@@ -1,0 +1,112 @@
+From 07c325f39dd63b635fe61c67d47305b30a53f31f Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 02:22:03 +0200
+Subject: [PATCH] HACK: keep overlays out of Wuthering Waves in-game web popups
+
+KRWebView.exe draws the in-game announcements through its own CEF GPU
+process. That process loads d3d11/dxgi like a game does, so ReShade,
+OptiScaler and the MangoHud and vkBasalt Vulkan layers hook it too and
+mess up the popup.
+
+Disable the overlay layers through their environment switches and skip
+the ReShade and OptiScaler redirects in that process. Only applies to
+KRWebView.exe.
+---
+ dlls/kernelbase/loader.c | 13 +++++++++++++
+ dlls/ntdll/loader.c      | 16 ++++++++++++++++
+ dlls/ntdll/unix/loader.c | 14 ++++++++++++++
+ 3 files changed, 43 insertions(+)
+
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -633,6 +633,17 @@
+ }
+ 
+ 
++static BOOL is_krwebview_process(void)
++{
++    const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++    const WCHAR *name;
++
++    if (!image->Buffer) return FALSE;
++    name = wcsrchr( image->Buffer, L'\\' );
++    return !wcsicmp( name ? name + 1 : image->Buffer, L"KRWebView.exe" );
++}
++
++
+ /*
+  * WINE_RESHADE_PATH=c:\reshade: redirect by-name dxgi.dll /
+  * d3dcompiler_47.dll loads there (the deployed ReShade dxgi wrapper);
+@@ -651,6 +662,7 @@
+     ret = GetEnvironmentVariableW( L"WINE_RESHADE_PATH", reshade_pathW, ARRAY_SIZE(reshade_pathW) );
+     if ( !ret || ret >= ARRAY_SIZE(reshade_pathW) ) return FALSE;
+     if ( GetEnvironmentVariableW( L"WINE_XXMI_PATH", lowerW, ARRAY_SIZE(lowerW) ) ) return FALSE;
++    if (is_krwebview_process()) return FALSE;
+ 
+     basename = wcsrchr( name, L'\\' );
+     if (!basename) basename = wcsrchr( name, L'/' );
+@@ -685,6 +697,7 @@
+     if (!basename) basename = wcsrchr( name, L'/' );
+     basename = basename ? basename + 1 : name;
+     if (wcsicmp( basename, L"d3d11.dll" )) return;
++    if (is_krwebview_process()) return;
+ 
+     ret = GetEnvironmentVariableW( L"WINE_RESHADE_PATH", pathW, ARRAY_SIZE(pathW) );
+     if ( !ret || ret >= ARRAY_SIZE(pathW) ) return;
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3598,6 +3598,21 @@
+ }
+ 
+ 
++static BOOL is_krwebview_process(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        const WCHAR *image = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++        const WCHAR *name = image ? wcsrchr( image, '\\' ) : NULL;
++
++        cached = image && !wcsicmp( name ? name + 1 : image, L"KRWebView.exe" );
++    }
++    return cached;
++}
++
++
+ /***********************************************************************
+  *	load_dll_optiscaler_hack
+  *
+@@ -3613,6 +3628,7 @@
+     NTSTATUS status;
+     HANDLE handle;
+ 
++    if ( is_krwebview_process() ) return FALSE;
+     if ( cached == -1 ) {
+         cached = get_env( L"WINE_OPTISCALER_NAME", dllW, sizeof(dllW));
+         if ( !cached ) return FALSE;
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2535,6 +2535,20 @@
+ 
+     if (main_argc > 1 && strstr(main_argv[1], "edCefRenderProcess.exe"))
+         process_termination_delay = TRUE;
++
++    if (main_argc > 1)
++    {
++        const char *name = strrchr( main_argv[1], '\\' );
++
++        if (!name) name = strrchr( main_argv[1], '/' );
++        name = name ? name + 1 : main_argv[1];
++        if (!strcasecmp( name, "KRWebView.exe" ))
++        {
++            setenv( "DISABLE_MANGOHUD", "1", 1 );
++            setenv( "DISABLE_MANGOHUD_NEXT", "1", 1 );
++            setenv( "DISABLE_VKBASALT", "1", 1 );
++        }
++    }
+ }
+ 
+ /***********************************************************************
+-- 
+2.51.0

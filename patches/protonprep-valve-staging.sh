@@ -478,6 +478,12 @@ apply_all_in_dir() {
     # HSR hacks ported from https://repo.tukandev.com/TTL-extras/sparkle
     echo "WINE: -PROTON-ANIME- HACK: HSR wintrust catalog stub + first-request block (StarRail.exe)"
     echo "WINE: -PROTON-ANIME- HACK: NTE hide-launcher mode (PROTON_NTE_HIDE_LAUNCHER=1)"
+    echo "WINE: -PROTON-ANIME- re-enable GE's X11 fallback for cross-process launcher UIs under winewayland + Kuro launcher"
+    echo "WINE: -PROTON-ANIME- compose the Kuro launcher's WebView2 on top of its layered WPF window"
+    echo "WINE: -PROTON-ANIME- HACK: apply the color key to KRWebView popups"
+    echo "WINE: -PROTON-ANIME- HACK: keep Wuthering Waves overlay dialogs unmapped under Wine-Wayland"
+    echo "WINE: -PROTON-ANIME- server: only close a desktop once its owner is its last user"
+    echo "WINE: -PROTON-ANIME- HACK: keep overlays out of Wuthering Waves in-game web popups"
     apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
 
 ### END PROTON-ANIME CUSTOM PATCHES ###
