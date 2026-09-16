@@ -1,0 +1,75 @@
+From 185b587bcd11b45c1380dfb93655b85190dddc2b Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Wed, 8 Jul 2026 21:01:00 +0200
+Subject: [PATCH] HACK: ws2_32: block first connect/send for Honkai: Star Rail
+
+The game needs its very first connect() and first send() to fail
+before it starts up correctly under wine. This forces WSAECONNREFUSED on
+those when the host process is StarRail.exe.
+
+Ported from tukan's sparkle.
+---
+ dlls/ws2_32/socket.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index f3814a5e7c..fe735cea98 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -1322,11 +1322,24 @@ int WINAPI closesocket( SOCKET s )
+ }
+ 
+ 
++/* HACK: hkrpg needs its first connect() and first send() to fail before it
++ * starts up correctly under wine; forced to WSAECONNREFUSED for StarRail.exe. */
++static BOOL is_honkai_starrail(void)
++{
++    static const WCHAR exeW[] = {'S','t','a','r','R','a','i','l','.','e','x','e',0};
++    WCHAR path[MAX_PATH], *p, *name = path;
++
++    if (!GetModuleFileNameW(NULL, path, MAX_PATH)) return FALSE;
++    for (p = path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    return !lstrcmpiW(name, exeW);
++}
++
+ /***********************************************************************
+  *      connect   (ws2_32.4)
+  */
+ int WINAPI connect( SOCKET s, const struct sockaddr *addr, int len )
+ {
++    static LONG connect_count;
+     struct afd_connect_params *params;
+     IO_STATUS_BLOCK io;
+     HANDLE sync_event;
+@@ -1343,6 +1356,12 @@ int WINAPI connect( SOCKET s, const struct sockaddr *addr, int len )
+         return -1;
+     }
+ 
++    if (InterlockedIncrement( &connect_count ) == 1 && is_honkai_starrail())
++    {
++        SetLastError( WSAECONNREFUSED );
++        return SOCKET_ERROR;
++    }
++
+     if (!(sync_event = get_sync_event())) return -1;
+ 
+     if (addr && len > (int)offsetof(struct sockaddr_un, sun_path) && addr->sa_family == AF_UNIX && *addr->sa_data)
+@@ -3212,9 +3231,16 @@ int WINAPI WSAPoll( WSAPOLLFD *fds, ULONG count, int timeout )
+  */
+ int WINAPI send( SOCKET s, const char *buf, int len, int flags )
+ {
++    static LONG send_count;
+     DWORD n;
+     WSABUF wsabuf;
+ 
++    if (InterlockedIncrement( &send_count ) == 1 && is_honkai_starrail())
++    {
++        SetLastError( WSAECONNREFUSED );
++        return SOCKET_ERROR;
++    }
++
+     wsabuf.len = len;
+     wsabuf.buf = (char*) buf;
+ 
+-- 
+2.51.0
