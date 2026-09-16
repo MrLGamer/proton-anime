@@ -1,0 +1,96 @@
+From 2bf13d6ac441f7018e109ba6f6215a1ecdcba359 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:37 +0200
+Subject: [PATCH] HACK: winewayland: Keep Wuthering Waves overlay dialogs unmapped
+
+Wuthering Waves draws its dimming layers, an invisible click catcher and
+the close buttons of its web popups as layered #32770 dialogs over the
+game. On GNOME (no wp_alpha_modifier_v1) the dimming layers turn solid
+black, every dialog becomes its own toplevel that GNOME places on its own,
+and some hidden ones stay mapped. The announcements end up behind a black
+window, a close button floats mid-screen and the game stops taking clicks.
+
+Don't map those dialogs at all. Color keyed ones (loading spinner,
+notification text) still show. Only applies to Client-Win64-Shipping.exe
+next to Kuro's KrPcSdk_Global or KrPcSdk_Mainland.
+---
+ dlls/winewayland.drv/window.c | 57 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 839103600f..99d1a15f90 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -294,6 +294,61 @@ static BOOL rect_intersects_virtual_screen(const RECT *rect)
+     return intersect_rect(&intersect, rect, &virtual_rect);
+ }
+ 
++/* whether the directory of the process image contains Kuro's PC SDK */
++static BOOL has_kuro_sdk_dir(const UNICODE_STRING *image, unsigned int dir_len, const WCHAR *subdir,
++                             unsigned int subdir_len)
++{
++    static const WCHAR prefixW[] = {'\\','?','?','\\'};
++    FILE_BASIC_INFORMATION info;
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING name;
++    WCHAR path[MAX_PATH + 64];
++
++    if (ARRAY_SIZE(prefixW) + dir_len + subdir_len >= ARRAY_SIZE(path)) return FALSE;
++    memcpy(path, prefixW, sizeof(prefixW));
++    memcpy(path + ARRAY_SIZE(prefixW), image->Buffer, dir_len * sizeof(WCHAR));
++    memcpy(path + ARRAY_SIZE(prefixW) + dir_len, subdir, subdir_len * sizeof(WCHAR));
++    path[ARRAY_SIZE(prefixW) + dir_len + subdir_len] = 0;
++
++    RtlInitUnicodeString(&name, path);
++    InitializeObjectAttributes(&attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL);
++    return !NtQueryAttributesFile(&attr, &info) && (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY);
++}
++
++/* Wuthering Waves draws dimming layers, an input catcher and close buttons as layered dialogs
++ * over the game. GNOME can neither blend nor position them, so they end up as opaque or stray
++ * windows that also outlive their hiding. Keep all but the color keyed ones unmapped. */
++static BOOL is_wuwa_overlay_dialog(HWND hwnd, DWORD exstyle)
++{
++    static const WCHAR dialog_class[] = {'#','3','2','7','7','0'};
++    static const WCHAR exeW[] = {'\\','C','l','i','e','n','t','-','W','i','n','6','4','-','S','h','i','p','p','i','n','g','.','e','x','e'};
++    static int is_wuwa = -1;
++    static const WCHAR globalW[] = {'\\','T','h','i','r','d','P','a','r','t','y','\\','K','r','P','c','S','d','k','_','G','l','o','b','a','l'};
++    static const WCHAR mainlandW[] = {'\\','T','h','i','r','d','P','a','r','t','y','\\','K','r','P','c','S','d','k','_','M','a','i','n','l','a','n','d'};
++    WCHAR buffer[16];
++    UNICODE_STRING name;
++    DWORD flags;
++
++    if (is_wuwa == -1)
++    {
++        const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++        unsigned int image_len = image->Length / sizeof(WCHAR);
++
++        is_wuwa = image->Buffer && image_len >= ARRAY_SIZE(exeW) &&
++                  !memcmp(image->Buffer + image_len - ARRAY_SIZE(exeW), exeW, sizeof(exeW)) &&
++                  (has_kuro_sdk_dir(image, image_len - ARRAY_SIZE(exeW), globalW, ARRAY_SIZE(globalW)) ||
++                   has_kuro_sdk_dir(image, image_len - ARRAY_SIZE(exeW), mainlandW, ARRAY_SIZE(mainlandW)));
++    }
++    if (!is_wuwa || !(exstyle & WS_EX_LAYERED)) return FALSE;
++    if (NtUserGetLayeredWindowAttributes(hwnd, NULL, NULL, &flags) && (flags & LWA_COLORKEY)) return FALSE;
++
++    name.Buffer = buffer;
++    name.MaximumLength = sizeof(buffer);
++    return NtUserGetClassName(hwnd, FALSE, &name) == ARRAY_SIZE(dialog_class) &&
++           !memcmp(buffer, dialog_class, sizeof(dialog_class));
++}
++
++
+ static BOOL should_keep_minimized_toplevel_mapped(struct wayland_surface *surface,
+                                                   DWORD style)
+ {
+@@ -409,6 +464,8 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+         (client || wayland_surface_has_hwnd_dmabuf_content(surface)))
+         visible = TRUE;
+ 
++    if (visible && is_wuwa_overlay_dialog(data->hwnd, exstyle)) visible = FALSE;
++
+     if (visible && !owner_surface && !use_layer_shell && !toplevel_surface &&
+         !rect_intersects_virtual_screen(&data->rects.window) &&
+         !should_keep_minimized_toplevel_mapped(surface, style))
+-- 
+2.51.0

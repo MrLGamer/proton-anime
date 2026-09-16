@@ -1,0 +1,39 @@
+From 9e9dfb1b38ea395748a0c2188ee78a5d24e6a6f0 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:33 +0200
+Subject: [PATCH] HACK: ntdll: Report Windows 7 to the Kuro launcher's bundled WebView2 runtime
+
+The WebView2 runtime bundled with the Kuro launcher only renders when it
+sees Windows 7. On newer versions it uses DirectComposition, which Wine
+doesn't implement.
+
+Report win7 to that msedgewebview2.exe unless an AppDefaults key says
+otherwise, so a fresh install works without any registry tweaks.
+---
+ dlls/ntdll/version.c |   10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/dlls/ntdll/version.c b/dlls/ntdll/version.c
+index 5a11a6f..e1f8d9e 100644
+--- a/dlls/ntdll/version.c
++++ b/dlls/ntdll/version.c
+@@ -510,6 +510,16 @@ void version_init(void)
+         NtClose( hkey );
+     }
+ 
++    /* HACK: the WebView2 runtime bundled with Kuro's launchers (Wuthering Waves, PGR)
++     * only renders as Windows 7, on newer versions it relies on DirectComposition */
++    if (!got_win_ver && wcsstr( NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer,
++                                L"\\KRWebViewRuntime\\" ))
++    {
++        TRACE( "Kuro WebView2 runtime, defaulting to win7\n" );
++        current_version = &VersionData[WIN7];
++        got_win_ver = TRUE;
++    }
++
+     if (!got_win_ver)
+     {
+         TRACE( "getting default version\n" );
+-- 
+2.51.0
+
