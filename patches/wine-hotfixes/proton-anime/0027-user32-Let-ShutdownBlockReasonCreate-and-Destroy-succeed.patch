@@ -1,0 +1,61 @@
+From 93bbaefe71692e8adadeeba92f3d57f785b979a9 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:39 +0200
+Subject: [PATCH] user32: Let ShutdownBlockReasonCreate and Destroy succeed.
+
+Both were stubs returning ERROR_CALL_NOT_IMPLEMENTED. NIKKE's launcher
+updater (Assistant.exe) gives up on that before installing the downloaded
+update, so the launcher keeps asking to update.
+
+Wine never blocks a shutdown anyway, so just check that the window belongs
+to the calling thread like Windows does and return success.
+---
+ dlls/user32/user_main.c | 23 +++++++++++++++++------
+ 1 file changed, 17 insertions(+), 6 deletions(-)
+
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -403,14 +403,26 @@
+     return 0;
+ }
+ 
++static BOOL check_shutdown_block_window( HWND hwnd )
++{
++    DWORD tid = GetWindowThreadProcessId( hwnd, NULL );
++
++    if (!tid) return FALSE;
++    if (tid != GetCurrentThreadId())
++    {
++        SetLastError( ERROR_ACCESS_DENIED );
++        return FALSE;
++    }
++    return TRUE;
++}
++
+ /***********************************************************************
+  *		ShutdownBlockReasonCreate (USER32.@)
+  */
+ BOOL WINAPI ShutdownBlockReasonCreate(HWND hwnd, LPCWSTR reason)
+ {
+-    FIXME("(%p, %s): stub\n", hwnd, debugstr_w(reason));
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
++    FIXME("(%p, %s): semi-stub\n", hwnd, debugstr_w(reason));
++    return check_shutdown_block_window( hwnd );
+ }
+ 
+ /***********************************************************************
+@@ -418,9 +430,8 @@
+  */
+ BOOL WINAPI ShutdownBlockReasonDestroy(HWND hwnd)
+ {
+-    FIXME("(%p): stub\n", hwnd);
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
++    FIXME("(%p): semi-stub\n", hwnd);
++    return check_shutdown_block_window( hwnd );
+ }
+ 
+ const char *SPY_GetMsgName( UINT msg, HWND hwnd )
+-- 
+2.53.0

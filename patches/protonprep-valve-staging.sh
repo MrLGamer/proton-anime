@@ -483,6 +483,7 @@ apply_all_in_dir() {
     echo "WINE: -PROTON-ANIME- HACK: apply the color key to KRWebView popups"
     echo "WINE: -PROTON-ANIME- HACK: keep Wuthering Waves overlay dialogs unmapped under Wine-Wayland"
     echo "WINE: -PROTON-ANIME- server: only close a desktop once its owner is its last user"
+    echo "WINE: -PROTON-ANIME- user32: let ShutdownBlockReasonCreate and Destroy succeed"
     echo "WINE: -PROTON-ANIME- HACK: keep overlays out of Wuthering Waves in-game web popups"
     apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
 

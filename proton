@@ -59,6 +59,7 @@ def _route_umu_id():
     umu_id = {
         "GenshinImpact.exe": "umu-genshin",
         "ZenlessZoneZero.exe": "umu-zenlesszonezero",
+        "nikke_launcher.exe": "umu-nikke",
     }.get(exe)
     if exe == "launcher.exe":
         exe_dir = os.path.dirname(sys.argv[2])

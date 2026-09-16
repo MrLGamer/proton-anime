@@ -53,7 +53,7 @@ Legend: ✅ working &nbsp;|&nbsp; ⚠️ working with issues &nbsp;|&nbsp; 🧪 
 | Neverness to Everness      | Steam / Epic / launcher     | ✅ | — |
 | Infinity Nikki             | Steam / Epic / launcher     | 🧪 | — |
 | Tower of Fantasy           | Steam / launcher            | 🧪 | — |
-| Goddess of Victory: NIKKE  | launcher                    | ❌ | Launcher updates broken, random crashes on video playback, login itself works |
+| Goddess of Victory: NIKKE  | launcher                    | ✅ | — |
 
 > [!Note]
 > None of these games officially support Linux, so a residual risk always remains. Whether
