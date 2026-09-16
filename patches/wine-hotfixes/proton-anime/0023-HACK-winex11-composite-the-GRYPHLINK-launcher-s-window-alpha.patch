@@ -1,0 +1,100 @@
+From 66a434ac170f58651737a33debed6fa2cf99ac82 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:35 +0200
+Subject: [PATCH] HACK: winex11: Composite the GRYPHLINK launcher's window alpha
+
+The Arknights: Endfield launcher is a frameless Qt window that draws its
+own rounded corners and shadow into a transparent margin, and relies on
+DwmEnableBlurBehindWindow() to get that alpha composited. Wine only stubs
+that function, so the margin shows up as a black and grey border.
+
+Give the launcher window the 32-bit ARGB visual so the compositor blends
+the alpha. The swapchain needs no change, on X11 the alpha comes from the
+window visual.
+
+Detected by exe path. Games under \GRYPHLINK\games\ are left alone.
+---
+ dlls/winex11.drv/init.c   | 34 +++++++++++++++++++++++++++++++++-
+ dlls/winex11.drv/window.c |  2 +-
+ dlls/winex11.drv/x11drv.h |  1 +
+ 3 files changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index f178ba1fa2..4a028ff225 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -367,6 +367,38 @@ BOOL is_kuro_webview_process(void)
+     return cached;
+ }
+ 
++static BOOL image_path_has_folder( const UNICODE_STRING *path, const WCHAR *folder, unsigned int folder_len )
++{
++    unsigned int i, j, len = path->Length / sizeof(WCHAR);
++
++    for (i = 0; path->Buffer && i + folder_len <= len; i++)
++    {
++        for (j = 0; j < folder_len; j++)
++            if (RtlDowncaseUnicodeChar( path->Buffer[i + j] ) != folder[j]) break;
++        if (j == folder_len) return TRUE;
++    }
++    return FALSE;
++}
++
++/* GRYPHLINK's launcher draws its rounded frame and drop shadow into a transparent
++ * margin and asks DWM to composite that alpha through DwmEnableBlurBehindWindow,
++ * which Wine does not implement. Installed games live under \GRYPHLINK\games\. */
++BOOL is_gryphlink_launcher(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        static const WCHAR gryphlinkW[] = {'\\','g','r','y','p','h','l','i','n','k','\\'};
++        static const WCHAR gamesW[] = {'\\','g','r','y','p','h','l','i','n','k','\\','g','a','m','e','s','\\'};
++        const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++
++        cached = image_path_has_folder( image, gryphlinkW, ARRAY_SIZE(gryphlinkW) ) &&
++                 !image_path_has_folder( image, gamesW, ARRAY_SIZE(gamesW) );
++    }
++    return cached;
++}
++
+ /* look up the visual of an X window we don't own (e.g. another process's toplevel) */
+ BOOL get_window_visual_info( Window window, XVisualInfo *info )
+ {
+@@ -989,7 +1021,7 @@ Window x11drv_client_surface_create( HWND hwnd, BOOL raw, int format, struct cli
+      * Vulkan surface window so the X compositor can blend its per-pixel alpha. The env
+      * var already scopes this to the opted-in game, so apply unconditionally — the
+      * window may not be WS_EX_LAYERED yet when the Vulkan surface is first created. */
+-    if (!format && layered_overlay_alpha_enabled())
++    if (!format && (layered_overlay_alpha_enabled() || is_gryphlink_launcher()))
+     {
+         if (argb_visual.visualid)
+         {
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 1f0e7379df..9958838555 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2868,7 +2868,7 @@ static void create_whole_window( struct x11drv_win_data *data )
+      * ARGB visual with per-pixel alpha so the compositor blends it (real transparency).
+      * The Vulkan child window being ARGB is not enough — the compositor composites the
+      * top-level, which must itself carry alpha. Env-var scoped to the opted-in game. */
+-    if (layered_overlay_alpha_enabled() && argb_visual.visualid &&
++    if ((layered_overlay_alpha_enabled() || is_gryphlink_launcher()) && argb_visual.visualid &&
+         data->vis.visualid != argb_visual.visualid)
+     {
+         data->vis = argb_visual;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 597fba975e..7ce707ae71 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -372,6 +372,7 @@ extern BOOL layered_overlay_shape_enabled(void);
+ extern BOOL layered_overlay_alpha_enabled(void);
+ extern BOOL layered_overlay_input_shape_enabled(void);
+ extern BOOL is_kuro_webview_process(void);
++extern BOOL is_gryphlink_launcher(void);
+ extern BOOL get_window_visual_info( Window window, XVisualInfo *info );
+ extern void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode, const XVisualInfo *visual, BOOL opaque );
+ extern Drawable get_dc_drawable( HDC hdc, RECT *rect );
+-- 
+2.51.0
