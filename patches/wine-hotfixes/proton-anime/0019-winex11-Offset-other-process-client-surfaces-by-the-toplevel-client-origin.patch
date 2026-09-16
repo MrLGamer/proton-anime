@@ -1,0 +1,96 @@
+From bd7ce3f43cfcc7b1a15ef069c3c316670d213f59 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 11 Sep 2026 22:24:28 +0200
+Subject: [PATCH] winex11: Offset other-process client surfaces by the toplevel
+ client origin
+
+client_surface_update_geometry() and X11DRV_client_surface_present() place
+a client surface relative to the toplevel's visible rect using the
+toplevel's x11drv_win_data, which only exists in the owning process. A
+surface created from another process (Proton's other-process window
+rendering, e.g. a CEF GPU process presenting into its browser's window)
+therefore lands at the whole-window origin, shifted by the frame width
+whenever the client rect doesn't start there (undecorated or shaped
+windows). Publish the client-vs-visible offset as a window property from
+the owner and use it when the win_data lookup fails.
+---
+ dlls/winex11.drv/init.c   | 11 +++++++++++
+ dlls/winex11.drv/window.c |  7 +++++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index c64ab1cb6c..372c758d3b 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -455,12 +455,17 @@ static void x11drv_client_surface_detach( struct client_surface *client )
+     }
+ }
+ 
++/* published by window.c for each toplevel: client-vs-visible rect offset, LOWORD x / HIWORD y */
++static const WCHAR client_offset_prop[] =
++    {'_','_','w','i','n','e','_','x','1','1','_','c','l','i','e','n','t','_','o','f','f','s','e','t',0};
++
+ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surface *surface )
+ {
+     UINT dpi = surface->raw ? NtUserGetWinMonitorDpi( hwnd, MDT_WINE_RAW_DPI ) : NtUserGetDpiForWindow( hwnd );
+     HWND origin = hwnd, toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+     XWindowChanges changes = surface->changes;
+     struct x11drv_win_data *data;
++    HANDLE offset;
+     int mask = 0;
+     RECT rect;
+ 
+@@ -474,6 +479,9 @@ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surf
+                     data->rects.client.top - data->rects.visible.top );
+         release_win_data( data );
+     }
++    /* other-process surfaces: the toplevel's owner publishes its client offset */
++    else if ((offset = NtUserGetProp( toplevel, client_offset_prop )))
++        OffsetRect( &rect, (short)LOWORD( (ULONG_PTR)offset ), (short)HIWORD( (ULONG_PTR)offset ) );
+ 
+     changes.x = rect.left;
+     changes.y = rect.top;
+@@ -831,6 +839,7 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+     RECT rect_dst, rect;
+     Drawable window;
+     HRGN region;
++    HANDLE offset;
+ 
+     client_surface_update_geometry( hwnd, surface );
+     client_surface_update_offscreen( hwnd, surface );
+@@ -882,6 +891,8 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+                     data->rects.client.top - data->rects.visible.top );
+         release_win_data( data );
+     }
++    else if ((offset = NtUserGetProp( toplevel, client_offset_prop )))
++        OffsetRect( &rect_dst, (short)LOWORD( (ULONG_PTR)offset ), (short)HIWORD( (ULONG_PTR)offset ) );
+ 
+     if (get_dc_drawable( surface->hdc_dst, &rect ) != window || !EqualRect( &rect, &rect_dst ))
+         set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index c2d231e71b..eae43b7fe6 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -117,6 +117,9 @@ static const WCHAR focus_time_prop[] =
+     {'_','_','w','i','n','e','_','x','1','1','_','f','o','c','u','s','_','t','i','m','e',0};
+ static const WCHAR frameless_window_prop[] =
+     {'_','_','w','i','n','e','_','w','i','n','3','2','u','_','f','r','a','m','e','l','e','s','s',0};
++/* client-vs-visible rect offset of a toplevel, for other-process client surfaces (see init.c) */
++static const WCHAR client_offset_prop[] =
++    {'_','_','w','i','n','e','_','x','1','1','_','c','l','i','e','n','t','_','o','f','f','s','e','t',0};
+ 
+ static const char *debugstr_mwm_hints( const MwmHints *hints )
+ {
+@@ -3766,6 +3769,10 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     old_rects = data->rects;
+     was_fullscreen = data->is_fullscreen;
+     if (!(new_style & WS_MINIMIZE) || is_virtual_desktop()) data->rects = *new_rects;
++    if (data->whole_window)
++        NtUserSetProp( hwnd, client_offset_prop,
++                       (HANDLE)(ULONG_PTR)MAKELONG( (short)(data->rects.client.left - data->rects.visible.left),
++                                                   (short)(data->rects.client.top - data->rects.visible.top) ) );
+     data->is_fullscreen = fullscreen;
+     data->is_resizable = !!(swp_flags & WINE_SWP_RESIZABLE);
+ 
+-- 
+2.51.0

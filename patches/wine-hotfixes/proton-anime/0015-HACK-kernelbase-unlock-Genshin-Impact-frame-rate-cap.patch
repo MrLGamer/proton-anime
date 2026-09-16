@@ -1,0 +1,123 @@
+From f928038568bc138e44c9a16a80a90a3fe77d8043 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 25 Jul 2026 19:30:00 +0200
+Subject: [PATCH] HACK: kernelbase: unlock the Genshin Impact frame rate cap with env variable
+
+The game rewrites the 60 fps cap on every settings change so
+it has to be located in memory and enforced for the whole session.
+With PROTON_GI_FPS=<n>, a thread pattern-scans the exe and rewrites
+the needed value once a second. Ported from TwintailTeam's KeqingUnlock.
+---
+ dlls/kernelbase/main.c | 90 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 90 insertions(+)
+
+diff --git a/dlls/kernelbase/main.c b/dlls/kernelbase/main.c
+--- a/dlls/kernelbase/main.c
++++ b/dlls/kernelbase/main.c
+@@ -130,6 +130,95 @@
+     if ((thread = CreateThread( NULL, 0, nte_launcher_watchdog, NULL, 0, NULL ))) CloseHandle( thread );
+ }
+ 
++/* HACK: PROTON_GI_FPS=<n>: the fps cap is a global the game rewrites
++ * on every settings change; find it via the "mov ecx, 60; call setter"
++ * pattern and keep rewriting it from a background thread.
++ * Ported from TwintailTeam's KeqingUnlock. */
++static const BYTE *genshin_find_pattern( const BYTE *start, SIZE_T size )
++{
++    static const BYTE pat[] = { 0xb9, 0x3c, 0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x80 };
++    static const BYTE msk[] = { 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1 };
++    const BYTE *p, *end;
++    unsigned int i;
++
++    if (size < sizeof(pat)) return NULL;
++    end = start + size - sizeof(pat);
++    for (p = start; p <= end; p++)
++    {
++        for (i = 0; i < sizeof(pat); i++) if (msk[i] && p[i] != pat[i]) break;
++        if (i == sizeof(pat)) return p;
++    }
++    return NULL;
++}
++
++static int *genshin_find_fps_var(void)
++{
++    const BYTE *module = (const BYTE *)NtCurrentTeb()->Peb->ImageBaseAddress;
++    const IMAGE_NT_HEADERS *nt = RtlImageNtHeader( (HMODULE)module );
++    const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
++    const BYTE *match = NULL, *p;
++    unsigned int i;
++
++    for (i = 0; i < nt->FileHeader.NumberOfSections && !match; i++)
++    {
++        MEMORY_BASIC_INFORMATION mbi;
++        const BYTE *ptr = module + sec[i].VirtualAddress;
++        const BYTE *sec_end = ptr + max( sec[i].Misc.VirtualSize, sec[i].SizeOfRawData );
++
++        if (!(sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
++        while (!match && ptr < sec_end && VirtualQuery( ptr, &mbi, sizeof(mbi) ))
++        {
++            const BYTE *region_end = min( (const BYTE *)mbi.BaseAddress + mbi.RegionSize, sec_end );
++            if (mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
++                match = genshin_find_pattern( ptr, region_end - ptr );
++            ptr = region_end;
++        }
++    }
++    if (!match) return NULL;
++
++    p = match + 5;
++    for (i = 0; i < 32 && (p[0] == 0xe8 || p[0] == 0xe9); i++)
++        p += 5 + *(const int *)(p + 1);
++    if (p[0] != 0x89 || p[1] != 0x0d) return NULL;
++    return (int *)(p + 6 + *(const int *)(p + 2));
++}
++
++static DWORD WINAPI genshin_fps_thread( void *arg )
++{
++    int fps = PtrToLong( arg ), *addr = NULL;
++    unsigned int i;
++
++    for (i = 0; i < 60 && !(addr = genshin_find_fps_var()); i++) Sleep( 2000 );
++    if (!addr)
++    {
++        FIXME( "HACK: could not locate the Genshin FPS variable, cap not unlocked.\n" );
++        return 0;
++    }
++    FIXME( "HACK: Genshin FPS variable at %p, enforcing %d fps.\n", addr, fps );
++    for (;;)
++    {
++        *(volatile int *)addr = fps;
++        Sleep( 1000 );
++    }
++}
++
++static void genshin_fps_init(void)
++{
++    WCHAR path[MAX_PATH], *p, *name = path;
++    HANDLE thread;
++    char buf[16];
++    int fps;
++
++    if (!GetEnvironmentVariableA( "PROTON_GI_FPS", buf, sizeof(buf) )) return;
++    if ((fps = strtol( buf, NULL, 10 )) <= 0) return;
++    if (!GetModuleFileNameW( NULL, path, MAX_PATH )) return;
++    for (p = path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    if (wcsicmp( name, L"GenshinImpact.exe" ) && wcsicmp( name, L"YuanShen.exe" )) return;
++
++    FIXME( "HACK: PROTON_GI_FPS=%d, starting FPS unlock thread.\n", fps );
++    if ((thread = CreateThread( NULL, 0, genshin_fps_thread, LongToPtr( fps ), 0, NULL ))) CloseHandle( thread );
++}
++
+ /***********************************************************************
+  *           DllMain
+  */
+@@ -144,6 +236,7 @@
+         enable_death_stranding_environment_audio();
+         trace_death_stranding_environment_audio();
+         nte_hide_launcher_init();
++        genshin_fps_init();
+     }
+     return TRUE;
+ }
+-- 
+2.51.0
+
