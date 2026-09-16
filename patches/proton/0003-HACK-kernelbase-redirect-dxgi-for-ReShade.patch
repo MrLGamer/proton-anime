@@ -1,0 +1,109 @@
+From 78bff020d3d3f3c13f4eede80cb9408b5029b5bd Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Fri, 25 Jul 2026 01:40:00 +0200
+Subject: [PATCH] HACK: kernelbase: redirect dxgi.dll for ReShade
+
+Set by protonfixes when PROTON_USE_RESHADE deploys ReShade. Without
+an XXMI importer this redirects the game's dxgi.dll load to the
+deployed ReShade wrapper. With one, ReShade64.dll gets co-injected
+next to 3dmigoto instead, ReShade owning the dxgi slot would steal
+the game's Present from 3dmigoto. The redirect only kicks in when
+the file actually exists.
+---
+ dlls/kernelbase/loader.c | 73 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 73 insertions(+)
+
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+index 9b65760..b44ab49 100644
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -649,6 +649,71 @@ BOOL loaddll_xxmi_hack(LPCWSTR name, LPWSTR override)
+ }
+ 
+ 
++/*
++ * WINE_RESHADE_PATH=c:\reshade: redirect by-name dxgi.dll /
++ * d3dcompiler_47.dll loads there (the deployed ReShade dxgi wrapper);
++ * explicit system dir loads are ReShade chain-loading the real dxgi.
++ * With XXMI active, loaddll_reshade_inject co-loads ReShade64.dll
++ * instead so 3dmigoto keeps the dxgi slot.
++ */
++BOOL loaddll_reshade_hack(LPCWSTR name, LPWSTR override)
++{
++    WCHAR reshade_pathW[MAX_PATH] = {0};
++    WCHAR lowerW[MAX_PATH] = {0};
++    LPCWSTR basename;
++    UINT ret;
++    int i;
++
++    ret = GetEnvironmentVariableW( L"WINE_RESHADE_PATH", reshade_pathW, ARRAY_SIZE(reshade_pathW) );
++    if ( !ret || ret >= ARRAY_SIZE(reshade_pathW) ) return FALSE;
++    if ( GetEnvironmentVariableW( L"WINE_XXMI_PATH", lowerW, ARRAY_SIZE(lowerW) ) ) return FALSE;
++
++    basename = wcsrchr( name, L'\\' );
++    if (!basename) basename = wcsrchr( name, L'/' );
++    basename = basename ? basename + 1 : name;
++    if (wcsicmp( basename, L"dxgi.dll" ) && wcsicmp( basename, L"d3dcompiler_47.dll" ))
++        return FALSE;
++
++    if (wcslen( name ) >= ARRAY_SIZE(lowerW)) return FALSE;
++    for (i = 0; name[i]; i++)
++        lowerW[i] = (name[i] >= L'A' && name[i] <= L'Z') ? name[i] + 32 : name[i];
++    lowerW[i] = 0;
++
++    if (wcsstr( lowerW, L"\\system32\\" ) || wcsstr( lowerW, L"\\syswow64\\" )) return FALSE;
++    if (wcsstr( lowerW, L"\\reshade\\" )) return FALSE;
++
++    if (wcslen( reshade_pathW ) + wcslen( basename ) + 2 > MAX_PATH) return FALSE;
++    wcscpy( override, reshade_pathW );
++    if (override[wcslen( override ) - 1] != L'\\') wcscat( override, L"\\" );
++    wcscat( override, basename );
++    if (GetFileAttributesW( override ) == INVALID_FILE_ATTRIBUTES) return FALSE;
++    return TRUE;
++}
++
++
++static void loaddll_reshade_inject(LPCWSTR name)
++{
++    WCHAR pathW[MAX_PATH] = {0};
++    LPCWSTR basename;
++    UINT ret;
++
++    basename = wcsrchr( name, L'\\' );
++    if (!basename) basename = wcsrchr( name, L'/' );
++    basename = basename ? basename + 1 : name;
++    if (wcsicmp( basename, L"d3d11.dll" )) return;
++
++    ret = GetEnvironmentVariableW( L"WINE_RESHADE_PATH", pathW, ARRAY_SIZE(pathW) );
++    if ( !ret || ret >= ARRAY_SIZE(pathW) ) return;
++    if (GetModuleHandleW( L"ReShade64.dll" )) return;
++
++    if (wcslen( pathW ) + 15 > MAX_PATH) return;
++    if (pathW[wcslen( pathW ) - 1] != L'\\') wcscat( pathW, L"\\" );
++    wcscat( pathW, L"ReShade64.dll" );
++    FIXME( "HACK: ReShade: injecting %s\n", debugstr_w(pathW) );
++    LoadLibraryExW( pathW, 0, LOAD_WITH_ALTERED_SEARCH_PATH );
++}
++
++
+ /***********************************************************************
+  *	LoadLibraryExW   (kernelbase.@)
+  */
+@@ -679,6 +749,14 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
+         flags = (flags & ~(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
+                            LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 |
+                            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)) | LOAD_WITH_ALTERED_SEARCH_PATH;
++        loaddll_reshade_inject( name );
++    }
++    else if ( loaddll_reshade_hack(name, overrideW) )
++    {
++        FIXME( "HACK: ReShade: redirecting %s to %s\n", debugstr_w(name), debugstr_w(overrideW));
++        flags = (flags & ~(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
++                           LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 |
++                           LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)) | LOAD_WITH_ALTERED_SEARCH_PATH;
+     }
+ 
+     RtlInitUnicodeString( &str, overrideW[0] ? overrideW : name );
+-- 
+2.51.0
+
