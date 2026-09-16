@@ -1,0 +1,73 @@
+From 4e8771504e7dc141b8df4f5a24862828b42909fc Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 1 Aug 2026 21:01:52 +0200
+Subject: [PATCH] protonfixes: add WuWa UserEngine.ini console variable support
+
+---
+ gamefixes-steam/3513350.py |   45 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/gamefixes-steam/3513350.py b/gamefixes-steam/3513350.py
+index 0a7b5de..2b069a3 100644
+--- a/gamefixes-steam/3513350.py
++++ b/gamefixes-steam/3513350.py
+@@ -2,7 +2,12 @@
+ https://www.protondb.com/app/3513350
+ """
+ 
++import os
++import sys
++from pathlib import Path
++
+ from protonfixes import util
++from protonfixes.logger import log
+ 
+ 
+ def main() -> None:
+@@ -15,3 +20,43 @@ def main() -> None:
+     """Unsetting them to also prevent issues on Steam Decks where they are set by default."""
+     util.del_environment('SteamOS')
+     util.del_environment('SteamDeck')
++
++    try:
++        _write_engine_ini()
++    except Exception as e:
++        log.warn('Failed to write the UserEngine.ini settings')
++        log.warn(e)
++
++
++def _find_game_root():
++    if len(sys.argv) < 3:
++        return None
++    path = Path(sys.argv[2]).parent
++    for folder in (path, *path.parents):
++        for root in (folder, folder.joinpath('Wuthering Waves Game')):
++            if root.joinpath('Client').is_dir() and root.joinpath('Engine').is_dir():
++                return root
++    return None
++
++
++def _write_engine_ini() -> None:
++    lines = []
++    for entry in os.environ.get('PROTON_WUWA_ENGINE_VARS', '').split(','):
++        if not entry.strip():
++            continue
++        key, sep, value = entry.partition('=')
++        if not sep or not key.strip():
++            log.warn(f'Ignoring malformed PROTON_WUWA_ENGINE_VARS entry "{entry.strip()}"')
++            continue
++        lines.append(f'{key.strip()}={value.strip()}\n')
++    if not lines:
++        return
++    root = _find_game_root()
++    if not root:
++        log.warn('Could not locate the Wuthering Waves game folder, skipping UserEngine.ini setup')
++        return
++    ini = root.joinpath('Client', 'Config', 'UserEngine.ini')
++    ini.parent.mkdir(parents=True, exist_ok=True)
++    with ini.open('w', encoding='utf-8') as fd:
++        fd.writelines(['[ConsoleVariables]\n', *lines])
++    log.info(f'Wrote engine settings to "{ini}"')
+-- 
+2.51.0
+

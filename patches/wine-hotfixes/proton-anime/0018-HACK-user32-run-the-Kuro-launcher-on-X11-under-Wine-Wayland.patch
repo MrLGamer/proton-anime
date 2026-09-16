@@ -1,0 +1,55 @@
+From 178cb3fe9956627ac049a26a3aa05a0a74a50910 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:32 +0200
+Subject: [PATCH] HACK: user32: run the Kuro launcher on X11 under Wine-Wayland
+
+The Kuro launcher (Wuthering Waves, Punishing: Gray Raven) is a WPF app
+that shows its UI through a bundled WebView2 runtime. The browser draws
+into the launcher window from another process, which stays blank on
+Wine-Wayland. Its KRInstallExternal helper also hangs when it runs on a
+different driver than the launcher, and the browser only starts once that
+helper is done.
+
+Run everything in the launcher folder and its KRWebViewRuntime on X11.
+---
+ dlls/user32/user_main.c | 20 +++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+--- b/dlls/user32/user_main.c	2026-09-11 19:52:42.438289938 +0200
++++ c/dlls/user32/user_main.c	2026-09-11 19:53:11.774694739 +0200
+@@ -136,6 +136,24 @@
+     return FALSE;
+ }
+ 
++/* The Kuro launcher directory (Wuthering Waves, Punishing: Gray Raven): the WPF
++ * host, its helpers and the WebView2 runtime it ships in KRWebViewRuntime */
++static BOOL is_kuro_launcher( const WCHAR *image )
++{
++    static const WCHAR runtimeW[] = L"KRWebViewRuntime";
++    WCHAR path[MAX_PATH];
++    const WCHAR *p;
++    size_t len;
++
++    if (path_contains( image, L"\\KRWebViewRuntime\\" )) return TRUE;
++    if (!(p = wcsrchr( image, '\\' ))) return FALSE;
++    len = p - image + 1;
++    if (len + ARRAY_SIZE(runtimeW) > ARRAY_SIZE(path)) return FALSE;
++    memcpy( path, image, len * sizeof(WCHAR) );
++    wcscpy( path + len, runtimeW );
++    return GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES;
++}
++
+ static BOOL use_x11_launcher_driver( const WCHAR *image, const WCHAR *name )
+ {
+     WCHAR custom[MAX_PATH];
+@@ -171,6 +189,8 @@
+         path_contains( image, L"\\Program Files\\Origin\\" ))
+         return TRUE;
+ 
++    if (is_kuro_launcher( image )) return TRUE;
++
+     return FALSE;
+ }
+ 
+-- 
+2.51.0

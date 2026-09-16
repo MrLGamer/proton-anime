@@ -1,0 +1,30 @@
+From 6e37c4411c9cba44b4d48251d8ed144e218d0840 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 12 Sep 2026 19:17:05 +0200
+Subject: [PATCH] protonfixes: drop the WuWa font installs
+
+The launcher is routed to this gamefix, so every launch paid for three
+winetricks font installs before the window even appeared. The runner's
+default prefix already provides the core fonts, and the game renders its
+own, so the wait bought nothing.
+---
+ gamefixes-steam/3513350.py |    5 -----
+ 1 file changed, 5 deletions(-)
+
+--- a/gamefixes-steam/3513350.py
++++ b/gamefixes-steam/3513350.py
+@@ -11,11 +11,6 @@
+ 
+ 
+ def main() -> None:
+-    """Font fixes for in-game resources, if any."""
+-    util.protontricks('sourcehansans')
+-    util.protontricks('fakechinese')
+-    util.protontricks('corefonts')
+-
+     """As of version 3.4, SteamOS/SteamDeck env vars force a broken plugin in-game to play videos."""
+     """Unsetting them to also prevent issues on Steam Decks where they are set by default."""
+     util.del_environment('SteamOS')
+-- 
+2.51.0
+

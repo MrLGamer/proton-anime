@@ -1,0 +1,220 @@
+From 81d35590cd27312a0eee38e2211270f74f775a93 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:33 +0200
+Subject: [PATCH] winex11: Draw into other-process toplevels with their visual and opaque alpha
+
+X11DRV_GetDC() assumes the default visual for a toplevel owned by another
+process, and the cross-process present blit doesn't set a visual at all.
+Layered toplevels use the 32-bit ARGB visual, so the formats don't match.
+
+Ask the X server for the real visual instead. Also stop forcing alpha to
+0 on these blits, a child drawn over an ARGB toplevel has to be opaque.
+
+Only applies to Kuro's bundled WebView2 runtime.
+---
+ dlls/winex11.drv/init.c    | 49 +++++++++++++++++++++++++++++++++++++++++++---
+ dlls/winex11.drv/opengl.c  |  2 +-
+ dlls/winex11.drv/window.c  |  9 ++++++---
+ dlls/winex11.drv/x11drv.h  |  5 ++++-
+ dlls/winex11.drv/xrender.c |  7 +++++--
+ 5 files changed, 62 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 372c758d3b..f178ba1fa2 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -349,7 +349,40 @@ BOOL needs_offscreen_rendering( HWND hwnd )
+     return FALSE;
+ }
+ 
+-void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode )
++/* Kuro's launcher hosts its WebView2 in a layered WPF window */
++BOOL is_kuro_webview_process(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        static const WCHAR markerW[] = {'\\','K','R','W','e','b','V','i','e','w','R','u','n','t','i','m','e','\\'};
++        const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++        unsigned int i, len = image->Length / sizeof(WCHAR);
++
++        cached = 0;
++        for (i = 0; image->Buffer && i + ARRAY_SIZE(markerW) <= len; i++)
++            if (!memcmp( image->Buffer + i, markerW, sizeof(markerW) )) { cached = 1; break; }
++    }
++    return cached;
++}
++
++/* look up the visual of an X window we don't own (e.g. another process's toplevel) */
++BOOL get_window_visual_info( Window window, XVisualInfo *info )
++{
++    XWindowAttributes attr;
++    XVisualInfo template, *list;
++    int count;
++
++    if (!XGetWindowAttributes( gdi_display, window, &attr ) || !attr.visual) return FALSE;
++    template.visualid = XVisualIDFromVisual( attr.visual );
++    if (!(list = XGetVisualInfo( gdi_display, VisualIDMask, &template, &count ))) return FALSE;
++    *info = list[0];
++    XFree( list );
++    return TRUE;
++}
++
++void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode, const XVisualInfo *visual, BOOL opaque )
+ {
+     struct x11drv_escape_set_drawable escape =
+     {
+@@ -357,7 +390,9 @@ void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode )
+         .drawable = drawable,
+         .dc_rect = *rect,
+         .mode = mode,
++        .opaque_alpha = opaque,
+     };
++    if (visual) escape.visual = *visual;
+     NtGdiExtEscape( hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+ }
+ 
+@@ -546,7 +581,7 @@ static void client_surface_update_offscreen( HWND hwnd, struct x11drv_client_sur
+         UNICODE_STRING device_str = RTL_CONSTANT_STRING(displayW);
+         surface->hdc_dst = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+         surface->hdc_src = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+-        set_dc_drawable( surface->hdc_src, surface->window, &surface->rect, IncludeInferiors );
++        set_dc_drawable( surface->hdc_src, surface->window, &surface->rect, IncludeInferiors, NULL, FALSE );
+ #ifdef SONAME_LIBXCOMPOSITE
+         if (usexcomposite) pXCompositeRedirectWindow( gdi_display, surface->window, CompositeRedirectManual );
+ #endif
+@@ -895,7 +930,15 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+         OffsetRect( &rect_dst, (short)LOWORD( (ULONG_PTR)offset ), (short)HIWORD( (ULONG_PTR)offset ) );
+ 
+     if (get_dc_drawable( surface->hdc_dst, &rect ) != window || !EqualRect( &rect, &rect_dst ))
+-        set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
++    {
++        /* the toplevel may use a different visual than the default one (e.g. an ARGB
++         * layered window), the blit needs the matching XRender format and, like a
++         * child window composed by DWM, must be opaque */
++        XVisualInfo visual;
++        BOOL kuro = is_kuro_webview_process();
++        BOOL have_visual = kuro && get_window_visual_info( window, &visual );
++        set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors, have_visual ? &visual : NULL, kuro );
++    }
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
+     if (update_layered_overlay_shape( surface, toplevel ))
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index d4ffd385c9..9589119786 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -1344,7 +1344,7 @@ static BOOL x11drv_pbuffer_create( HDC hdc, int format, BOOL largest, GLenum tex
+     pglXQueryDrawable( gdi_display, gl->drawable, GLX_WIDTH, (unsigned int *)width );
+     pglXQueryDrawable( gdi_display, gl->drawable, GLX_HEIGHT, (unsigned int *)height );
+     SetRect( &rect, 0, 0, *width, *height );
+-    set_dc_drawable( hdc, gl->drawable, &rect, IncludeInferiors );
++    set_dc_drawable( hdc, gl->drawable, &rect, IncludeInferiors, NULL, FALSE );
+ 
+     *drawable = &gl->base;
+     return TRUE;
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index eae43b7fe6..1f0e7379df 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3499,13 +3499,14 @@ Window X11DRV_get_whole_window( HWND hwnd )
+ void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
+                    const RECT *top_rect, DWORD flags )
+ {
+-    struct x11drv_escape_set_drawable escape;
++    struct x11drv_escape_set_drawable escape = {0};
+     struct x11drv_win_data *data;
+     int emulated_mode_offset;
+ 
+     escape.code = X11DRV_SET_DRAWABLE;
+     escape.mode = IncludeInferiors;
+     escape.drawable = 0;
++    escape.opaque_alpha = is_kuro_webview_process();
+ 
+     escape.dc_rect.left         = win_rect->left - top_rect->left;
+     escape.dc_rect.top          = win_rect->top - top_rect->top;
+@@ -3529,7 +3530,9 @@ void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
+     else
+     {
+         escape.drawable = X11DRV_get_whole_window( top );
+-        escape.visual = default_visual; /* FIXME: use the right visual for other process window */
++        if (!escape.drawable || !escape.opaque_alpha ||
++            !get_window_visual_info( escape.drawable, &escape.visual ))
++            escape.visual = default_visual;
+         if (escape.drawable) mark_direct_draw_child( hwnd, top );
+     }
+ 
+@@ -3543,7 +3546,7 @@ void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
+  */
+ void X11DRV_ReleaseDC( HWND hwnd, HDC hdc )
+ {
+-    struct x11drv_escape_set_drawable escape;
++    struct x11drv_escape_set_drawable escape = {0};
+ 
+     escape.code = X11DRV_SET_DRAWABLE;
+     escape.drawable = root_window;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index c294e1d55d..597fba975e 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -357,6 +357,7 @@ struct x11drv_escape_set_drawable
+     int                      mode;         /* ClipByChildren or IncludeInferiors */
+     RECT                     dc_rect;      /* DC rectangle relative to drawable */
+     XVisualInfo              visual;       /* X visual used by drawable, may be unspecified if no change is needed */
++    BOOL                     opaque_alpha; /* drawing must be opaque (alpha 0xff) on a drawable with alpha */
+ };
+ 
+ struct x11drv_escape_get_drawable
+@@ -370,7 +371,9 @@ extern BOOL needs_offscreen_rendering( HWND hwnd );
+ extern BOOL layered_overlay_shape_enabled(void);
+ extern BOOL layered_overlay_alpha_enabled(void);
+ extern BOOL layered_overlay_input_shape_enabled(void);
+-extern void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode );
++extern BOOL is_kuro_webview_process(void);
++extern BOOL get_window_visual_info( Window window, XVisualInfo *info );
++extern void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode, const XVisualInfo *visual, BOOL opaque );
+ extern Drawable get_dc_drawable( HDC hdc, RECT *rect );
+ extern HRGN get_dc_monitor_region( HWND hwnd, HDC hdc );
+ extern Window x11drv_client_surface_create( HWND hwnd, BOOL raw, int format, struct client_surface **client );
+diff --git a/dlls/winex11.drv/xrender.c b/dlls/winex11.drv/xrender.c
+index 5adbdc958c..24b8885c26 100644
+--- a/dlls/winex11.drv/xrender.c
++++ b/dlls/winex11.drv/xrender.c
+@@ -152,6 +152,7 @@ struct xrender_physdev
+     Picture            pict;
+     Picture            pict_src;
+     XRenderPictFormat *pict_format;
++    BOOL               opaque_alpha;  /* alpha-less sources are drawn opaque, not with alpha 0 */
+ };
+ 
+ static inline struct xrender_physdev *get_xrender_dev( PHYSDEV dev )
+@@ -1003,6 +1004,7 @@ static INT xrenderdrv_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOID
+                     }
+                     if (i == WXR_NB_FORMATS) WARN( "Format not found for drawable visual.\n" );
+                 }
++                physdev->opaque_alpha = set->opaque_alpha;
+                 free_xrender_picture( physdev );
+                 set_physdev_format( physdev, format );
+             }
+@@ -1673,7 +1675,8 @@ static void xrender_stretch_blit( struct xrender_physdev *physdev_src, struct xr
+     }
+     else /* color -> color (can be at different depths) or mono -> mono */
+     {
+-        if (physdev_dst->pict_format->depth == 32 && physdev_src->pict_format->depth < 32)
++        if (physdev_dst->pict_format->depth == 32 && physdev_src->pict_format->depth < 32 &&
++            !physdev_dst->opaque_alpha)
+             mask_pict = get_no_alpha_mask();
+ 
+         xrender_blit( PictOpSrc, src_pict, mask_pict, dst_pict,
+@@ -1817,7 +1820,7 @@ static DWORD xrenderdrv_PutImage( PHYSDEV dev, HRGN clip, BITMAPINFO *info,
+ 
+     if (!bits) return ERROR_SUCCESS;  /* just querying the format */
+ 
+-    if (!has_alpha( src_format ) && has_alpha( dst_format )) mask_pict = get_no_alpha_mask();
++    if (!has_alpha( src_format ) && has_alpha( dst_format ) && !physdev->opaque_alpha) mask_pict = get_no_alpha_mask();
+ 
+     ret = create_image_pixmap( info, bits, src, src_format, &src_pixmap, &src_pict, &use_repeat );
+     if (!ret)
+-- 
+2.51.0

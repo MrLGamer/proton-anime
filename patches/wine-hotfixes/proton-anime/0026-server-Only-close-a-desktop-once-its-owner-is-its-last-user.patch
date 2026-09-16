@@ -1,0 +1,67 @@
+From 9c3217d5bd024795f5abebdb9e9641a0871f29be Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:38 +0200
+Subject: [PATCH] server: Only close a desktop once its owner is its last user.
+
+remove_desktop_user() closes the desktop once the remaining user count
+matches the owner's thread count, assuming those users are all the
+owner's threads. That's wrong when the owner has a thread that never
+attached to the desktop while another process is still using it.
+
+Explorer starts such a thread under Wine-Wayland, so the desktop could
+close while the launching process was still on it. Explorer then dropped
+its ShellWindows class object, CoCreateInstance(CLSID_ShellWindows)
+failed with REGDB_E_KEYMISSING, and WebView2 couldn't start (blank Kuro
+launcher).
+
+Check the desktop's thread list for users from other processes instead,
+and mark a process as a system process before releasing its threads so
+they stop counting.
+---
+ server/process.c    |  2 +-
+ server/winstation.c | 12 +++++++++++-
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+--- a/server/process.c
++++ b/server/process.c
+@@ -1850,9 +1850,9 @@
+ 
+     if (!process->is_system)
+     {
++        process->is_system = 1;
+         LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
+             release_thread_desktop( thread, 0 );
+-        process->is_system = 1;
+         if (!--user_processes && !shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
+             shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
+     }
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -444,6 +444,16 @@
+     if (desktop == desktop->winstation->input_desktop) set_rawinput_process( thread->process, 1 );
+ }
+ 
++/* whether a thread of a process other than the desktop owner still uses the desktop */
++static int desktop_has_foreign_users( struct desktop *desktop, struct process *owner )
++{
++    struct thread *thread;
++
++    LIST_FOR_EACH_ENTRY( thread, &desktop->threads, struct thread, desktop_entry )
++        if (thread->process != owner && !thread->process->is_system) return 1;
++    return 0;
++}
++
+ /* remove a user of the desktop and start the close timeout if necessary */
+ static void remove_desktop_user( struct desktop *desktop, struct thread *thread )
+ {
+@@ -453,7 +463,7 @@
+     desktop->users--;
+ 
+     /* if we have one remaining user, it has to be the manager of the desktop window */
+-    if ((process = get_top_window_owner( desktop )) && desktop->users == process->running_threads && !desktop->close_timeout)
++    if ((process = get_top_window_owner( desktop )) && !desktop_has_foreign_users( desktop, process ) && !desktop->close_timeout)
+         desktop->close_timeout = add_timeout_user( desktop->close_timeout_val, close_desktop_timeout, desktop );
+ }
+ 
+-- 
+2.51.0

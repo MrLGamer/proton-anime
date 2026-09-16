@@ -1,0 +1,277 @@
+From d27e4d59916a04dd0e783488b43f787163008e9e Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Tue, 15 Sep 2026 00:18:41 +0200
+Subject: [PATCH] HACK: winex11: Apply the color key to KRWebView popups
+
+The in-game web popups in Kuro's games (KRWebView.exe, e.g. the Wuthering
+Waves announcements) use a black LWA_COLORKEY so the backdrop is
+see-through. Wine builds the color key shape from the window surface, but
+the page is presented by CEF's GPU process from another process and never
+touches that surface, so the popup gets a solid black background.
+
+Read the presented image back and shape the black pixels out.
+
+mutter scans out fullscreen windows directly and ignores their shape, so
+also keep an invisible 1x1 window above the popup to keep it composited.
+
+Proton turns off other-process rendering for the game (noopwr), which
+breaks the popup too, so KRWebView.exe ignores that setting.
+
+Only applies to KRWebView.exe.
+---
+ dlls/winex11.drv/init.c | 187 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 186 insertions(+), 1 deletion(-)
+
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -468,6 +468,12 @@
+     XRectangle *shape_rects;
+     unsigned int shape_rect_count;
+ 
++    XRectangle *key_rects;
++    unsigned int key_rect_count;
++    Window scanout_blocker;
++    Colormap scanout_blocker_colormap;
++    DWORD scanout_blocker_tick;
++
+     /* MIT-SHM readback cache, recreated on resize */
+ #ifdef HAVE_LIBXXSHM
+     XImage *shm_image;
+@@ -496,6 +502,9 @@
+     if (surface->hdc_src) NtGdiDeleteObjectApp( surface->hdc_src );
+     free( surface->shape_age );
+     free( surface->shape_rects );
++    free( surface->key_rects );
++    if (surface->scanout_blocker) XDestroyWindow( gdi_display, surface->scanout_blocker );
++    if (surface->scanout_blocker_colormap) XFreeColormap( gdi_display, surface->scanout_blocker_colormap );
+ #ifdef HAVE_LIBXXSHM
+     if (surface->shm_active)
+     {
+@@ -897,6 +906,207 @@
+ #endif
+ }
+ 
++/* KRSDK's in-game web popups (KRWebView.exe) are windowed CEF: a LWA_COLORKEY toplevel whose
++ * content the CEF GPU process presents into a child window */
++static BOOL is_krsdk_webview_process(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        static const WCHAR nameW[] = {'\\','K','R','W','e','b','V','i','e','w','.','e','x','e'};
++        const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++        unsigned int len = image->Length / sizeof(WCHAR);
++
++        cached = image->Buffer && len >= ARRAY_SIZE(nameW) &&
++                 !memcmp( image->Buffer + len - ARRAY_SIZE(nameW), nameW, sizeof(nameW) );
++    }
++    return cached;
++}
++
++static BOOL add_key_rect( XRectangle **rects, unsigned int *count, unsigned int *capacity,
++                          int x, int y, unsigned int width, unsigned int height )
++{
++    if (!width || !height) return TRUE;
++    if (*count == *capacity)
++    {
++        unsigned int new_capacity = max( 256, *capacity * 2 );
++        XRectangle *new_rects;
++
++        if (!(new_rects = realloc( *rects, new_capacity * sizeof(*new_rects) ))) return FALSE;
++        *rects = new_rects;
++        *capacity = new_capacity;
++    }
++    (*rects)[*count].x = x;
++    (*rects)[*count].y = y;
++    (*rects)[*count].width = width;
++    (*rects)[*count].height = height;
++    (*count)++;
++    return TRUE;
++}
++
++#ifdef HAVE_LIBXSHAPE
++/* Compositors may scan a fullscreen window out directly, which ignores its shape (mutter does), so
++ * keep an invisible, input-transparent pixel stacked on top of the toplevel to keep it composited. */
++static void update_scanout_blocker( struct x11drv_client_surface *surface, Window window, Window root )
++{
++    XSetWindowAttributes attr;
++    XWindowAttributes window_attr;
++    XWindowChanges changes;
++    DWORD now = NtGetTickCount();
++    Window child;
++    int x, y;
++
++    if (!argb_visual.visualid) return;
++    if (surface->scanout_blocker && now - surface->scanout_blocker_tick < 250) return;
++    surface->scanout_blocker_tick = now;
++
++    if (!XGetWindowAttributes( gdi_display, window, &window_attr ) || window_attr.map_state != IsViewable ||
++        !XTranslateCoordinates( gdi_display, window, root, 0, 0, &x, &y, &child ))
++    {
++        if (surface->scanout_blocker) XUnmapWindow( gdi_display, surface->scanout_blocker );
++        return;
++    }
++
++    if (!surface->scanout_blocker)
++    {
++        surface->scanout_blocker_colormap = XCreateColormap( gdi_display, root, argb_visual.visual, AllocNone );
++        attr.override_redirect = True;
++        attr.background_pixel = 0;
++        attr.border_pixel = 0;
++        attr.colormap = surface->scanout_blocker_colormap;
++        surface->scanout_blocker = XCreateWindow( gdi_display, root, x, y, 1, 1, 0, argb_visual.depth, InputOutput,
++                                                  argb_visual.visual, CWOverrideRedirect | CWBackPixel |
++                                                  CWBorderPixel | CWColormap, &attr );
++        if (!surface->scanout_blocker) return;
++        XShapeCombineRectangles( gdi_display, surface->scanout_blocker, ShapeInput, 0, 0, NULL, 0, ShapeSet, YXBanded );
++        TRACE( "created scanout blocker %lx for %lx\n", surface->scanout_blocker, window );
++    }
++
++    changes.x = x;
++    changes.y = y;
++    changes.stack_mode = Above;
++    XConfigureWindow( gdi_display, surface->scanout_blocker, CWX | CWY | CWStackMode, &changes );
++    XMapWindow( gdi_display, surface->scanout_blocker );
++}
++
++#endif
++
++/* Wine applies a layered window color key by shaping the toplevel from its window surface, but
++ * a client surface presented from another process is blitted straight into the X window and
++ * never goes through that surface. Shape those pixels out of the toplevel here instead. */
++static void update_color_key_shape( struct x11drv_client_surface *surface, HWND toplevel, Window window,
++                                    const RECT *rect_dst )
++{
++#ifdef HAVE_LIBXSHAPE
++    unsigned int width = surface->rect.right - surface->rect.left, height = surface->rect.bottom - surface->rect.top;
++    unsigned int x, y, count = 0, capacity = 0, band = 0, band_count = 0, geom_width, geom_height, border, depth;
++    unsigned long key_pixel;
++    XRectangle *rects = NULL;
++    XImage *image = NULL;
++    BOOL borrowed = FALSE;
++    DWORD flags;
++    COLORREF key;
++    Window root;
++    int geom_x, geom_y;
++
++    if (!surface->other_process || !is_krsdk_webview_process()) return;
++    if (!(NtUserGetWindowLongW( toplevel, GWL_EXSTYLE ) & WS_EX_LAYERED)) return;
++    if (!NtUserGetLayeredWindowAttributes( toplevel, &key, NULL, &flags ) || !(flags & LWA_COLORKEY)) return;
++    if (!width || !height || rect_dst->right - rect_dst->left != width || rect_dst->bottom - rect_dst->top != height) return;
++    if (!XGetGeometry( gdi_display, window, &root, &geom_x, &geom_y, &geom_width, &geom_height, &border, &depth )) return;
++    update_scanout_blocker( surface, window, root );
++
++#ifdef HAVE_LIBXXSHM
++    if (ensure_shm_image( surface, width, height ))
++    {
++        BOOL got;
++
++        X11DRV_expect_error( gdi_display, overlay_xshm_error, NULL );
++        got = XShmGetImage( gdi_display, surface->window, surface->shm_image, 0, 0, AllPlanes );
++        if (X11DRV_check_error()) got = FALSE;
++        if (got)
++        {
++            image = surface->shm_image;
++            borrowed = TRUE;
++        }
++    }
++#endif
++    if (!image && !(image = XGetImage( gdi_display, surface->window, 0, 0, width, height, AllPlanes, ZPixmap )))
++        return;
++    if (!image_is_native_32bpp( image ) || image->red_mask != 0xff0000 || image->green_mask != 0xff00 ||
++        image->blue_mask != 0xff)
++        goto done;
++
++    key_pixel = (GetRValue( key ) << 16) | (GetGValue( key ) << 8) | GetBValue( key );
++
++    /* the parts of the toplevel the client surface doesn't cover */
++    if (!add_key_rect( &rects, &count, &capacity, 0, 0, geom_width, max( 0, rect_dst->top ) )) goto done;
++    if (!add_key_rect( &rects, &count, &capacity, 0, rect_dst->top, max( 0, rect_dst->left ), height )) goto done;
++    if ((int)geom_width > rect_dst->right &&
++        !add_key_rect( &rects, &count, &capacity, rect_dst->right, rect_dst->top, geom_width - rect_dst->right, height ))
++        goto done;
++    if ((int)geom_height > rect_dst->bottom &&
++        !add_key_rect( &rects, &count, &capacity, 0, rect_dst->bottom, geom_width, geom_height - rect_dst->bottom ))
++        goto done;
++
++    for (y = 0; y < height; y++)
++    {
++        const unsigned int *row = (const unsigned int *)(image->data + (size_t)y * image->bytes_per_line);
++        unsigned int row_start = count, row_count;
++
++        for (x = 0; x < width;)
++        {
++            unsigned int start;
++
++            while (x < width && (row[x] & 0xffffff) == key_pixel) x++;
++            start = x;
++            while (x < width && (row[x] & 0xffffff) != key_pixel) x++;
++            if (x > start && !add_key_rect( &rects, &count, &capacity, rect_dst->left + start,
++                                            rect_dst->top + y, x - start, 1 ))
++                goto done;
++        }
++
++        /* grow the previous band instead when this row has the same runs */
++        row_count = count - row_start;
++        if (y && row_count == band_count)
++        {
++            unsigned int i;
++
++            for (i = 0; i < row_count; i++)
++                if (rects[band + i].x != rects[row_start + i].x || rects[band + i].width != rects[row_start + i].width)
++                    break;
++            if (i == row_count)
++            {
++                for (i = 0; i < row_count; i++) rects[band + i].height++;
++                count = row_start;
++                continue;
++            }
++        }
++        band = row_start;
++        band_count = row_count;
++    }
++
++    if (count != surface->key_rect_count || !surface->key_rects ||
++        memcmp( rects, surface->key_rects, count * sizeof(*rects) ))
++    {
++        static XRectangle empty;
++
++        TRACE( "toplevel %p/%lx color key %06lx shape updated with %u rectangles\n", toplevel, window, key_pixel, count );
++        XShapeCombineRectangles( gdi_display, window, ShapeBounding, 0, 0, count ? rects : &empty, count ? count : 1,
++                                 ShapeSet, Unsorted );
++        free( surface->key_rects );
++        surface->key_rects = rects;
++        surface->key_rect_count = count;
++        rects = NULL;
++    }
++
++done:
++    free( rects );
++    if (!borrowed) XDestroyImage( image );
++#endif
++}
++
+ static void X11DRV_client_surface_present( struct client_surface *client, HDC hdc )
+ {
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+@@ -973,6 +1183,7 @@
+     }
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
++    update_color_key_shape( surface, toplevel, window, &rect_dst );
+     if (update_layered_overlay_shape( surface, toplevel ))
+         NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+                          surface->hdc_src, 0, 0, surface->rect.right, surface->rect.bottom, SRCCOPY, 0 );
+@@ -1002,7 +1213,8 @@
+     if (disable == -1)
+     {
+         const char *e = getenv( "WINE_DISABLE_VULKAN_OPWR" );
+-        disable = e && atoi( e );
++        /* the popup needs OPWR, even under Proton's noopwr for the game */
++        disable = e && atoi( e ) && !is_krsdk_webview_process();
+     }
+     return disable;
+ }
+-- 
+2.51.0
