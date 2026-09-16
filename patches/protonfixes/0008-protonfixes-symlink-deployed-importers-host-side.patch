@@ -1,0 +1,56 @@
+From 4a928d698037b345fb6022534b849f4691dd6cc8 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Mon, 14 Sep 2026 01:52:05 +0200
+Subject: [PATCH] protonfixes: symlink deployed importers host-side
+
+The deployment is symlinked to `$XDG_DATA_HOME/xxmi/<IMPORTER>/Importer`
+so its files are reachable next to the mods.
+---
+ xxmi.py | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/xxmi.py b/xxmi.py
+index 1388e74..fc46014 100644
+--- a/xxmi.py
++++ b/xxmi.py
+@@ -222,6 +222,24 @@ def __setup_mods_dir(dest: Path, env: dict) -> Path:
+     return target
+ 
+ 
++# The deployed importer is symlinked next to the host-side mods so its files
++# are reachable without digging through compatdata
++def __setup_host_link(dest: Path, env: dict) -> None:
++    if env.get('PROTON_XXMI_MODS_PATH', ''):
++        return
++    data_home = env.get('XDG_DATA_HOME', '') or Path.home().joinpath('.local', 'share')
++    link = Path(data_home).joinpath('xxmi', dest.name, 'Importer')
++    if link.is_symlink():
++        if link.readlink() == dest:
++            return
++        link.unlink()
++    elif link.exists():
++        log.warn(f'Not linking the importer, "{link}" already exists')
++        return
++    link.parent.mkdir(parents=True, exist_ok=True)
++    link.symlink_to(dest)
++
++
+ # d3dx.ini toggles mirroring the XXMI Launcher settings; unset variables
+ # enforce the launcher defaults (warnings muted, everything else off)
+ __ini_toggles = (
+@@ -390,6 +408,12 @@ def setup_xxmi(compat_config: set, env: dict, compat_dir: str, prefix_dir: str,
+             log.warn('Failed to update d3dx.ini settings')
+             log.warn(e)
+ 
++    try:
++        __setup_host_link(dest, env)
++    except Exception as e:
++        log.warn('Failed to link the importer host-side')
++        log.warn(e)
++
+     env['WINE_XXMI_PATH'] = 'C:\\xxmi\\' + importer['folder']
+     log.info(f'{name.upper()} enabled, mods folder: {mods}')
+ 
+-- 
+2.53.0.697.g625c4fb2daa
+
