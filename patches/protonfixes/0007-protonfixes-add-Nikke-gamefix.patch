@@ -1,0 +1,30 @@
+From 88385dd0596c14865d53cde227ecab77b5f8fa64 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Wed, 5 Aug 2026 16:39:54 +0200
+Subject: [PATCH] protonfixes: add Nikke gamefix
+
+The launcher greys out its repair and download options when it sees
+Steam's ID variables in the environment, so drop them for the session.
+---
+ gamefixes-umu/umu-nikke.py | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+ create mode 100644 gamefixes-umu/umu-nikke.py
+
+diff --git a/gamefixes-umu/umu-nikke.py b/gamefixes-umu/umu-nikke.py
+new file mode 100644
+index 0000000..45ae08c
+--- /dev/null
++++ b/gamefixes-umu/umu-nikke.py
+@@ -0,0 +1,9 @@
++"""GODDESS OF VICTORY: NIKKE"""
++
++from protonfixes import util
++
++
++def main() -> None:
++    """The launcher locks its repair and download options when it detects a Steam launch."""
++    util.del_environment('SteamGameId')
++    util.del_environment('SteamAppId')
+-- 
+2.51.0
+

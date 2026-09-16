@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Wed, 5 Aug 2026 20:15:00 +0200
+Subject: [PATCH] winex11: Detect the AltGr modifier mask from the modifier map
+
+AltGrMask was only learned from received X key events, so processes that
+translate keys without getting X input themselves (e.g. CEF webview
+subprocesses) kept an empty mask and ToUnicodeEx dropped the AltGr level.
+The detected mask only applies while an AltGr vkey is held, the per-event
+mask keeps its old behavior.
+---
+ dlls/winex11.drv/keyboard.c | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
+index a614c404c0..6c6094068e 100644
+--- a/dlls/winex11.drv/keyboard.c
++++ b/dlls/winex11.drv/keyboard.c
+@@ -104,6 +104,9 @@ static WORD keyc2scan[256] =
+ };
+ 
+ static int NumLockMask, ScrollLockMask, AltGrMask; /* mask in the XKeyEvent state */
++static int AltGrInitMask; /* AltGr mask detected from the modifier map */
++static BYTE AltGrVkeys[8]; /* vkeys assigned to the AltGr keycodes */
++static int AltGrVkeyCount;
+ 
+ static pthread_mutex_t kbd_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -1692,6 +1695,8 @@ void X11DRV_InitKeyboard( Display *display )
+     XDisplayKeycodes(display, &min_keycode, &max_keycode);
+     XFree( XGetKeyboardMapping( display, min_keycode, max_keycode + 1 - min_keycode, &keysyms_per_keycode ) );
+ 
++    AltGrInitMask = 0;
++    AltGrVkeyCount = 0;
+     mmp = XGetModifierMapping(display);
+     kcp = mmp->modifiermap;
+     for (i = 0; i < 8; i += 1) /* There are 8 modifier keys */
+@@ -1714,6 +1719,12 @@ void X11DRV_InitKeyboard( Display *display )
+                         ScrollLockMask = 1 << i;
+                         TRACE_(key)("ScrollLockMask is %x\n", ScrollLockMask);
+ 		    }
++                    else if (XkbKeycodeToKeysym( display, *kcp, 0, k ) == XK_ISO_Level3_Shift ||
++                             XkbKeycodeToKeysym( display, *kcp, 0, k ) == XK_Mode_switch)
++		    {
++                        AltGrInitMask = 1 << i;
++                        TRACE_(key)("AltGrMask is %x\n", AltGrInitMask);
++		    }
+             }
+     }
+     XFreeModifiermap(mmp);
+@@ -1910,6 +1921,21 @@ void X11DRV_InitKeyboard( Display *display )
+ 	keyc2scan[keyc]=scan++;
+       }
+ 
++    /* The modifier map usually lists only a virtual AltGr keycode, so find
++     * every keycode producing the AltGr keysyms and record their vkeys */
++    for (keyc = min_keycode; keyc <= max_keycode; keyc++)
++        for (i = 0; i < keysyms_per_keycode; i++)
++        {
++            keysym = XkbKeycodeToKeysym( display, keyc, 0, i );
++            if ((keysym == XK_ISO_Level3_Shift || keysym == XK_Mode_switch) &&
++                (keyc2vkey[keyc] & 0xff) && AltGrVkeyCount < ARRAY_SIZE(AltGrVkeys))
++            {
++                AltGrVkeys[AltGrVkeyCount++] = keyc2vkey[keyc] & 0xff;
++                TRACE_(key)("AltGr keycode %u => vkey %02x\n", keyc, AltGrVkeys[AltGrVkeyCount - 1]);
++                break;
++            }
++        }
++
+     pthread_mutex_unlock( &kbd_mutex );
+ }
+ 
+@@ -2474,6 +2500,11 @@ INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
+     TRACE_(key)("AltGrMask = %04x\n", AltGrMask);
+     e.state |= AltGrMask;
+ 
++    /* Apply the detected AltGr modifier while its key is held down, for
++     * processes that translate keys without receiving X input themselves */
++    for (keyc = 0; keyc < AltGrVkeyCount; keyc++)
++        if (lpKeyState[AltGrVkeys[keyc]] & 0x80) e.state |= AltGrInitMask;
++
+     TRACE_(key)("(%04X, %04X) : faked state = 0x%04x\n",
+ 		virtKey, scanCode, e.state);
+ 
+-- 
+2.51.0
