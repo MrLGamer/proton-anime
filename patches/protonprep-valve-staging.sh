@@ -480,6 +480,7 @@ apply_all_in_dir() {
     echo "WINE: -PROTON-ANIME- HACK: NTE hide-launcher mode (PROTON_NTE_HIDE_LAUNCHER=1)"
     echo "WINE: -PROTON-ANIME- re-enable GE's X11 fallback for cross-process launcher UIs under winewayland + Kuro launcher"
     echo "WINE: -PROTON-ANIME- compose the Kuro launcher's WebView2 on top of its layered WPF window"
+    echo "WINE: -PROTON-ANIME- HACK: composite the GRYPHLINK launcher's window alpha"
     echo "WINE: -PROTON-ANIME- HACK: apply the color key to KRWebView popups"
     echo "WINE: -PROTON-ANIME- HACK: keep Wuthering Waves overlay dialogs unmapped under Wine-Wayland"
     echo "WINE: -PROTON-ANIME- server: only close a desktop once its owner is its last user"
