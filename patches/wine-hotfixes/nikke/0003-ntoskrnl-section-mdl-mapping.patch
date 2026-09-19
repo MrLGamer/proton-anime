@@ -1,0 +1,267 @@
+From 5a45cdc5d67855d089f805a98052ed30611bfed1 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 20 Sep 2026 01:43:03 +0200
+Subject: [PATCH] ntoskrnl: Retain independently mapped section views for local
+ MDLs.
+
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c        | 185 +++++++++++++++++++++++++++-
+ dlls/ntoskrnl.exe/ntoskrnl.exe.spec |   6 +-
+ 2 files changed, 184 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index 80a3748..1f91b09 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -68,6 +68,156 @@ static DWORD client_tid;
+ 
+ static HANDLE ntoskrnl_heap;
+ 
++/* Track section-backed MDLs. A second view owns its
++ * lifetime independently from the view passed to IoAllocateMdl. */
++struct kernel_section_view
++{
++    struct list entry;
++    void *base;
++    SIZE_T size;
++    HANDLE section;
++    LARGE_INTEGER offset;
++    ULONG protect;
++};
++struct kernel_mdl_view
++{
++    struct list entry;
++    MDL *mdl;
++    void *base;
++};
++static struct list kernel_section_views = LIST_INIT(kernel_section_views);
++static struct list kernel_mdl_views = LIST_INIT(kernel_mdl_views);
++DECLARE_CRITICAL_SECTION(kernel_views_cs);
++
++NTSTATUS WINAPI kernel_map_section( HANDLE section, HANDLE process, void **base,
++                                   ULONG_PTR zero_bits, SIZE_T commit_size,
++                                   LARGE_INTEGER *offset, SIZE_T *size, SECTION_INHERIT inherit,
++                                   ULONG allocation_type, ULONG protect )
++{
++    struct kernel_section_view *view;
++    NTSTATUS status;
++
++    if (process != NtCurrentProcess())
++        return NtMapViewOfSection( section, process, base, zero_bits, commit_size, offset,
++                                  size, inherit, allocation_type, protect );
++    if (!(view = malloc( sizeof(*view) ))) return STATUS_NO_MEMORY;
++    status = NtDuplicateObject( NtCurrentProcess(), section, NtCurrentProcess(), &view->section,
++                                0, 0, DUPLICATE_SAME_ACCESS );
++    if (status)
++    {
++        free( view );
++        return status;
++    }
++    EnterCriticalSection( &kernel_views_cs );
++    status = NtMapViewOfSection( section, process, base, zero_bits, commit_size, offset,
++                                size, inherit, allocation_type, protect );
++    if (!status)
++    {
++        view->base = *base;
++        view->size = *size;
++        view->offset.QuadPart = offset ? offset->QuadPart : 0;
++        view->protect = protect;
++        list_add_tail( &kernel_section_views, &view->entry );
++        TRACE("section %p view %p size %Iu retained as %p\n", section, *base, *size, view->section);
++    }
++    LeaveCriticalSection( &kernel_views_cs );
++    if (status)
++    {
++        NtClose( view->section );
++        free( view );
++    }
++    return status;
++}
++
++NTSTATUS WINAPI kernel_unmap_section( HANDLE process, void *base )
++{
++    struct kernel_section_view *view, *next;
++    NTSTATUS status;
++
++    if (process != NtCurrentProcess()) return NtUnmapViewOfSection( process, base );
++    EnterCriticalSection( &kernel_views_cs );
++    status = NtUnmapViewOfSection( process, base );
++    if (!status) LIST_FOR_EACH_ENTRY_SAFE( view, next, &kernel_section_views, struct kernel_section_view, entry )
++    {
++        if ((ULONG_PTR)base < (ULONG_PTR)view->base ||
++            (ULONG_PTR)base - (ULONG_PTR)view->base >= view->size) continue;
++        TRACE("release section view %p\n", view->base);
++        list_remove( &view->entry );
++        NtClose( view->section );
++        free( view );
++        break;
++    }
++    LeaveCriticalSection( &kernel_views_cs );
++    return status;
++}
++
++static void *map_mdl_section( MDL *mdl, BOOL *found )
++{
++    struct kernel_section_view *view;
++    struct kernel_mdl_view *mapping;
++    ULONG_PTR address = (ULONG_PTR)mdl->StartVa + mdl->ByteOffset;
++    void *result = NULL;
++    LARGE_INTEGER offset;
++    SIZE_T size;
++    NTSTATUS status;
++
++    *found = FALSE;
++    EnterCriticalSection( &kernel_views_cs );
++    LIST_FOR_EACH_ENTRY( mapping, &kernel_mdl_views, struct kernel_mdl_view, entry )
++    {
++        if (mapping->mdl != mdl) continue;
++        *found = TRUE;
++        result = mdl->MappedSystemVa;
++        goto done;
++    }
++    LIST_FOR_EACH_ENTRY( view, &kernel_section_views, struct kernel_section_view, entry )
++    {
++        if (address < (ULONG_PTR)view->base || address - (ULONG_PTR)view->base >= view->size) continue;
++        *found = TRUE;
++        if (mdl->ByteCount > view->size - (address - (ULONG_PTR)view->base)) break;
++        /* Copy-on-write views cannot be aliased this way. */
++        if (view->protect & (PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) break;
++        if (!(mapping = calloc( 1, sizeof(*mapping) ))) break;
++        size = view->size;
++        offset = view->offset;
++        status = NtMapViewOfSection( view->section, NtCurrentProcess(), &mapping->base,
++                                    0, 0, &offset, &size, ViewUnmap, 0, view->protect );
++        if (status)
++        {
++            free( mapping );
++            break;
++        }
++        mapping->mdl = mdl;
++        list_add_tail( &kernel_mdl_views, &mapping->entry );
++        result = (char *)mapping->base + (address - (ULONG_PTR)view->base);
++        mdl->MappedSystemVa = result;
++        mdl->MdlFlags |= MDL_MAPPED_TO_SYSTEM_VA;
++        TRACE("MDL %p original %p alias %p size %lu\n", mdl, (void *)address, result, mdl->ByteCount);
++        break;
++    }
++ done:
++    LeaveCriticalSection( &kernel_views_cs );
++    return result;
++}
++
++static void unmap_mdl_section( MDL *mdl )
++{
++    struct kernel_mdl_view *view, *next;
++
++    EnterCriticalSection( &kernel_views_cs );
++    LIST_FOR_EACH_ENTRY_SAFE( view, next, &kernel_mdl_views, struct kernel_mdl_view, entry )
++    {
++        if (view->mdl != mdl) continue;
++        NtUnmapViewOfSection( NtCurrentProcess(), view->base );
++        list_remove( &view->entry );
++        free( view );
++        break;
++    }
++    mdl->MdlFlags &= ~MDL_MAPPED_TO_SYSTEM_VA;
++    mdl->MappedSystemVa = NULL;
++    LeaveCriticalSection( &kernel_views_cs );
++}
++
+ static void *ldr_notify_cookie;
+ 
+ static PLOAD_IMAGE_NOTIFY_ROUTINE load_image_notify_routines[8];
+@@ -1247,6 +1397,7 @@ PMDL WINAPI IoAllocateMdl( PVOID va, ULONG length, BOOLEAN secondary, BOOLEAN ch
+ void WINAPI IoFreeMdl(PMDL mdl)
+ {
+     TRACE("%p\n", mdl);
++    unmap_mdl_section( mdl );
+     HeapFree(GetProcessHeap(), 0, mdl);
+ }
+ 
+@@ -3203,9 +3354,33 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
+ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, MEMORY_CACHING_TYPE CacheType,
+                                            PVOID BaseAddress, ULONG BugCheckOnFailure, MM_PAGE_PRIORITY Priority)
+ {
+-    FIXME("(%p, %u, %u, %p, %lu, %u): stub\n", MemoryDescriptorList, AccessMode, CacheType, BaseAddress, BugCheckOnFailure, Priority);
++    MEMORY_BASIC_INFORMATION info;
++    BOOL found;
++    void *mapping;
++    ULONG_PTR address = (ULONG_PTR)MemoryDescriptorList->StartVa + MemoryDescriptorList->ByteOffset;
++    ULONG_PTR end = address + MemoryDescriptorList->ByteCount, cursor = address;
+ 
+-    return NULL;
++    TRACE("(%p, %u, %u, %p, %lu, %u)\n", MemoryDescriptorList, AccessMode, CacheType, BaseAddress, BugCheckOnFailure, Priority);
++
++    /* A cached kernel mapping can use pages already mapped in this process.
++     * Other cache policies and user mappings require a separate mapping. */
++    if (AccessMode != KernelMode || CacheType != MmCached || Priority & 0xc0000000)
++    {
++        FIXME("Unsupported mapping mode/cache/protection.\n");
++        return NULL;
++    }
++    if (!address || end <= address) return NULL;
++    while (cursor < end)
++    {
++        if (!VirtualQuery( (void *)cursor, &info, sizeof(info) ) || info.State != MEM_COMMIT ||
++            info.Protect & (PAGE_NOACCESS | PAGE_GUARD))
++            return NULL;
++        if ((ULONG_PTR)info.BaseAddress + info.RegionSize <= cursor) return NULL;
++        cursor = (ULONG_PTR)info.BaseAddress + info.RegionSize;
++    }
++    mapping = map_mdl_section( MemoryDescriptorList, &found );
++    if (found) return mapping;
++    return MmMapLockedPages( MemoryDescriptorList, AccessMode );
+ }
+ 
+ /***********************************************************************
+@@ -3213,7 +3388,8 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSO
+  */
+ void WINAPI MmUnmapLockedPages( void *base, MDL *mdl )
+ {
+-    FIXME( "(%p %p_\n", base, mdl );
++    TRACE( "(%p %p)\n", base, mdl );
++    unmap_mdl_section( mdl );
+ }
+ 
+ /***********************************************************************
+@@ -3257,7 +3433,8 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
+  */
+ void WINAPI  MmUnlockPages(PMDLX MemoryDescriptorList)
+ {
+-    FIXME("(%p): stub\n", MemoryDescriptorList);
++    TRACE("%p\n", MemoryDescriptorList);
++    unmap_mdl_section( MemoryDescriptorList );
+ }
+ 
+ 
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index 8eb204d..61e9bbd 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -809,7 +809,7 @@
+ @ stdcall NtFsControlFile(long long ptr ptr ptr long ptr long ptr long)
+ @ stub NtGlobalFlag
+ @ stdcall NtLockFile(long long ptr ptr ptr ptr ptr ptr long long)
+-@ stdcall NtMapViewOfSection(long long ptr long long ptr ptr long long long)
++@ stdcall NtMapViewOfSection(long long ptr long long ptr ptr long long long) kernel_map_section
+ @ stdcall NtNotifyChangeDirectoryFile(long long ptr ptr ptr ptr long long long)
+ @ stdcall NtOpenFile(ptr long ptr ptr long long)
+ @ stdcall NtOpenProcess(ptr long ptr ptr)
+@@ -1462,7 +1462,7 @@
+ @ stdcall -private ZwLockVirtualMemory(long ptr ptr long) NtLockVirtualMemory
+ @ stdcall ZwMakePermanentObject(long) NtMakePermanentObject
+ @ stdcall ZwMakeTemporaryObject(long) NtMakeTemporaryObject
+-@ stdcall ZwMapViewOfSection(long long ptr long long ptr ptr long long long) NtMapViewOfSection
++@ stdcall ZwMapViewOfSection(long long ptr long long ptr ptr long long long) kernel_map_section
+ @ stdcall -private ZwNotifyChangeDirectoryFile(long long ptr ptr ptr ptr long long long) NtNotifyChangeDirectoryFile
+ @ stdcall -private ZwNotifyChangeKey(long long ptr ptr ptr long long ptr long long) NtNotifyChangeKey
+ @ stdcall ZwOpenDirectoryObject(ptr long ptr) NtOpenDirectoryObject
+@@ -1555,7 +1555,7 @@
+ @ stdcall -private ZwUnloadKey(ptr) NtUnloadKey
+ @ stdcall -private ZwUnlockFile(long ptr ptr ptr ptr) NtUnlockFile
+ @ stdcall -private ZwUnlockVirtualMemory(long ptr ptr long) NtUnlockVirtualMemory
+-@ stdcall ZwUnmapViewOfSection(long ptr) NtUnmapViewOfSection
++@ stdcall ZwUnmapViewOfSection(long ptr) kernel_unmap_section
+ @ stdcall -private ZwWaitForMultipleObjects(long ptr long long ptr) NtWaitForMultipleObjects
+ @ stdcall ZwWaitForSingleObject(long long ptr) NtWaitForSingleObject
+ @ stdcall ZwWriteFile(long long ptr ptr ptr ptr long ptr ptr) NtWriteFile

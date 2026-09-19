@@ -1,0 +1,237 @@
+From bf7185e765ec3a0f0ce2a2e6cf066819042d69e8 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 20 Sep 2026 01:43:03 +0200
+Subject: [PATCH] ntoskrnl: Invoke registered callbacks for local process and
+ thread opens.
+
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c        | 176 ++++++++++++++++++++++++++--
+ dlls/ntoskrnl.exe/ntoskrnl.exe.spec |   8 +-
+ 2 files changed, 168 insertions(+), 16 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index 1f91b09..36ead75 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -3556,25 +3556,177 @@ void FASTCALL ObfDereferenceObject( void *obj )
+     ObDereferenceObject( obj );
+ }
+ 
+-/***********************************************************************
+- *           ObRegisterCallbacks (NTOSKRNL.EXE.@)
+- */
+-NTSTATUS WINAPI ObRegisterCallbacks(POB_CALLBACK_REGISTRATION callback, void **handle)
++/* Local handle-open callbacks. Cross-process delivery through
++ * wineserver and handle duplication are not covered here. */
++#define OB_OPERATION_HANDLE_CREATE 1
++
++struct kernel_ob_registration
+ {
+-    FIXME( "callback %p, handle %p.\n", callback, handle );
++    struct list entry;
++    UNICODE_STRING altitude;
++    void *context;
++    USHORT count;
++    OB_OPERATION_REGISTRATION operations[];
++};
++static struct list kernel_ob_callbacks = LIST_INIT(kernel_ob_callbacks);
++DECLARE_CRITICAL_SECTION(kernel_ob_cs);
+ 
+-    if(handle)
+-        *handle = UlongToHandle(0xdeadbeaf);
++NTSTATUS WINAPI ObRegisterCallbacks( POB_CALLBACK_REGISTRATION callback, void **handle )
++{
++    struct kernel_ob_registration *registration, *other;
++    unsigned int i;
+ 
++    if (!callback || !handle || callback->Version != OB_FLT_REGISTRATION_VERSION ||
++        !callback->OperationRegistrationCount || !callback->OperationRegistration ||
++        !callback->Altitude.Buffer || !callback->Altitude.Length || callback->Altitude.Length & 1)
++        return STATUS_INVALID_PARAMETER;
++    for (i = 0; i < callback->OperationRegistrationCount; i++)
++    {
++        OB_OPERATION_REGISTRATION *operation = callback->OperationRegistration + i;
++        if (!operation->ObjectType ||
++            (*operation->ObjectType != PsProcessType && *operation->ObjectType != PsThreadType) ||
++            !operation->Operations || operation->Operations & ~3 ||
++            (!operation->PreOperation && !operation->PostOperation)) return STATUS_INVALID_PARAMETER;
++    }
++    registration = calloc( 1, sizeof(*registration) + callback->OperationRegistrationCount * sizeof(OB_OPERATION_REGISTRATION) );
++    if (!registration) return STATUS_INSUFFICIENT_RESOURCES;
++    registration->altitude.Buffer = malloc( callback->Altitude.Length + sizeof(WCHAR) );
++    if (!registration->altitude.Buffer)
++    {
++        free( registration );
++        return STATUS_INSUFFICIENT_RESOURCES;
++    }
++    memcpy( registration->altitude.Buffer, callback->Altitude.Buffer, callback->Altitude.Length );
++    registration->altitude.Buffer[callback->Altitude.Length / sizeof(WCHAR)] = 0;
++    registration->altitude.Length = callback->Altitude.Length;
++    registration->altitude.MaximumLength = callback->Altitude.Length;
++    registration->context = callback->RegistrationContext;
++    registration->count = callback->OperationRegistrationCount;
++    memcpy( registration->operations, callback->OperationRegistration,
++            registration->count * sizeof(OB_OPERATION_REGISTRATION) );
++    EnterCriticalSection( &kernel_ob_cs );
++    LIST_FOR_EACH_ENTRY( other, &kernel_ob_callbacks, struct kernel_ob_registration, entry )
++    {
++        if (!RtlCompareUnicodeString( &other->altitude, &registration->altitude, FALSE ))
++        {
++            LeaveCriticalSection( &kernel_ob_cs );
++            free( registration->altitude.Buffer );
++            free( registration );
++            return STATUS_FLT_INSTANCE_ALTITUDE_COLLISION;
++        }
++    }
++    list_add_tail( &kernel_ob_callbacks, &registration->entry );
++    LeaveCriticalSection( &kernel_ob_cs );
++    for (i = 0; i < registration->count; i++)
++        TRACE("registration %p altitude %s type %p pre %p post %p\n", registration,
++              debugstr_us(&registration->altitude), *registration->operations[i].ObjectType,
++              registration->operations[i].PreOperation, registration->operations[i].PostOperation);
++    *handle = registration;
+     return STATUS_SUCCESS;
+ }
+ 
+-/***********************************************************************
+- *           ObUnRegisterCallbacks (NTOSKRNL.EXE.@)
+- */
+-void WINAPI ObUnRegisterCallbacks(void *handle)
++void WINAPI ObUnRegisterCallbacks( void *handle )
++{
++    struct kernel_ob_registration *registration;
++    EnterCriticalSection( &kernel_ob_cs );
++    LIST_FOR_EACH_ENTRY( registration, &kernel_ob_callbacks, struct kernel_ob_registration, entry )
++    {
++        if (registration != handle) continue;
++        list_remove( &registration->entry );
++        free( registration->altitude.Buffer );
++        free( registration );
++        break;
++    }
++    LeaveCriticalSection( &kernel_ob_cs );
++}
++
++struct kernel_ob_call
++{
++    void *registration_context, *call_context;
++    POB_POST_OPERATION_CALLBACK post;
++};
++
++static NTSTATUS kernel_open_object( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attributes,
++                                    CLIENT_ID *id, BOOL thread )
++{
++    struct kernel_ob_registration *registration;
++    struct kernel_ob_call *calls;
++    OB_PRE_OPERATION_PARAMETERS parameters = {{access, access}};
++    OB_PRE_OPERATION_INFORMATION information = {0};
++    OB_POST_OPERATION_PARAMETERS post_parameters = {{0}};
++    OB_POST_OPERATION_INFORMATION post = {0};
++    OBJECT_BASIC_INFORMATION basic;
++    void *object;
++    NTSTATUS status;
++    unsigned int count = 0, used = 0, i;
++
++    if (!id) return STATUS_INVALID_PARAMETER;
++    if (thread) status = PsLookupThreadByThreadId( id->UniqueThread, (PETHREAD *)&object );
++    else status = PsLookupProcessByProcessId( id->UniqueProcess, (PEPROCESS *)&object );
++    if (status) return status;
++    information.Operation = OB_OPERATION_HANDLE_CREATE;
++    information.KernelHandle = attributes && (attributes->Attributes & OBJ_KERNEL_HANDLE);
++    information.Object = object;
++    information.ObjectType = thread ? PsThreadType : PsProcessType;
++    information.Parameters = &parameters;
++    EnterCriticalSection( &kernel_ob_cs );
++    LIST_FOR_EACH_ENTRY( registration, &kernel_ob_callbacks, struct kernel_ob_registration, entry )
++        count += registration->count;
++    calls = calloc( count ? count : 1, sizeof(*calls) );
++    if (!calls)
++    {
++        LeaveCriticalSection( &kernel_ob_cs );
++        ObDereferenceObject( object );
++        return STATUS_INSUFFICIENT_RESOURCES;
++    }
++    LIST_FOR_EACH_ENTRY( registration, &kernel_ob_callbacks, struct kernel_ob_registration, entry )
++    {
++        for (i = 0; i < registration->count; i++)
++        {
++            OB_OPERATION_REGISTRATION *operation = registration->operations + i;
++            if (*operation->ObjectType != information.ObjectType ||
++                !(operation->Operations & OB_OPERATION_HANDLE_CREATE)) continue;
++            information.CallContext = NULL;
++            if (operation->PreOperation) operation->PreOperation( registration->context, &information );
++            /* Callbacks may remove access, never add permissions. */
++            parameters.CreateHandleInformation.DesiredAccess &= access;
++            calls[used].registration_context = registration->context;
++            calls[used].call_context = information.CallContext;
++            calls[used++].post = operation->PostOperation;
++        }
++    }
++    if (thread) status = NtOpenThread( handle, parameters.CreateHandleInformation.DesiredAccess, attributes, id );
++    else status = NtOpenProcess( handle, parameters.CreateHandleInformation.DesiredAccess, attributes, id );
++    if (!status && !NtQueryObject( *handle, ObjectBasicInformation, &basic, sizeof(basic), NULL ))
++        post_parameters.CreateHandleInformation.GrantedAccess = basic.GrantedAccess;
++    post.Operation = information.Operation;
++    post.KernelHandle = information.KernelHandle;
++    post.Object = object;
++    post.ObjectType = information.ObjectType;
++    post.ReturnStatus = status;
++    post.Parameters = &post_parameters;
++    while (used--)
++    {
++        post.CallContext = calls[used].call_context;
++        if (calls[used].post) calls[used].post( calls[used].registration_context, &post );
++    }
++    TRACE("%s id %p access %#lx -> %#lx status %#lx\n", thread ? "thread" : "process",
++          thread ? id->UniqueThread : id->UniqueProcess, access,
++          parameters.CreateHandleInformation.DesiredAccess, status);
++    free( calls );
++    LeaveCriticalSection( &kernel_ob_cs );
++    ObDereferenceObject( object );
++    return status;
++}
++
++NTSTATUS WINAPI kernel_open_process( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attributes, CLIENT_ID *id )
++{
++    return kernel_open_object( handle, access, attributes, id, FALSE );
++}
++
++NTSTATUS WINAPI kernel_open_thread( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attributes, CLIENT_ID *id )
+ {
+-    FIXME( "stub: %p\n", handle );
++    return kernel_open_object( handle, access, attributes, id, TRUE );
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index 61e9bbd..c4267b9 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -812,10 +812,10 @@
+ @ stdcall NtMapViewOfSection(long long ptr long long ptr ptr long long long) kernel_map_section
+ @ stdcall NtNotifyChangeDirectoryFile(long long ptr ptr ptr ptr long long long)
+ @ stdcall NtOpenFile(ptr long ptr ptr long long)
+-@ stdcall NtOpenProcess(ptr long ptr ptr)
++@ stdcall NtOpenProcess(ptr long ptr ptr) kernel_open_process
+ @ stdcall NtOpenProcessToken(long long ptr)
+ @ stdcall NtOpenProcessTokenEx(long long long ptr)
+-@ stdcall NtOpenThread(ptr long ptr ptr)
++@ stdcall NtOpenThread(ptr long ptr ptr) kernel_open_thread
+ @ stdcall NtOpenThreadToken(long long long ptr)
+ @ stdcall NtOpenThreadTokenEx(long long long long ptr)
+ @ stdcall NtQueryDirectoryFile(long long ptr ptr ptr ptr long long long ptr long)
+@@ -1473,12 +1473,12 @@
+ @ stdcall -private ZwOpenKeyEx(ptr long ptr long) NtOpenKeyEx
+ @ stdcall -private ZwOpenKeyTransacted(ptr long ptr long) NtOpenKeyTransacted
+ @ stdcall -private ZwOpenKeyTransactedEx(ptr long ptr long long) NtOpenKeyTransactedEx
+-@ stdcall -private ZwOpenProcess(ptr long ptr ptr) NtOpenProcess
++@ stdcall -private ZwOpenProcess(ptr long ptr ptr) kernel_open_process
+ @ stdcall -private ZwOpenProcessToken(long long ptr) NtOpenProcessToken
+ @ stdcall -private ZwOpenProcessTokenEx(long long long ptr) NtOpenProcessTokenEx
+ @ stdcall ZwOpenSection(ptr long ptr) NtOpenSection
+ @ stdcall -private ZwOpenSymbolicLinkObject(ptr long ptr) NtOpenSymbolicLinkObject
+-@ stdcall -private ZwOpenThread(ptr long ptr ptr) NtOpenThread
++@ stdcall -private ZwOpenThread(ptr long ptr ptr) kernel_open_thread
+ @ stdcall -private ZwOpenThreadToken(long long long ptr) NtOpenThreadToken
+ @ stdcall -private ZwOpenThreadTokenEx(long long long long ptr) NtOpenThreadTokenEx
+ @ stdcall -private ZwOpenTimer(ptr long ptr) NtOpenTimer

@@ -5,9 +5,11 @@ Subject: [PATCH] protonfixes: add Nikke gamefix
 
 The launcher greys out its repair and download options when it sees
 Steam's ID variables in the environment, so drop them for the session.
+Enable the kernel-entry compatibility path and automatic startup of Wine's
+SamSs service in this game's prefix.
 ---
- gamefixes-umu/umu-nikke.py | 9 +++++++++
- 1 file changed, 9 insertions(+)
+ gamefixes-umu/umu-nikke.py | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
  create mode 100644 gamefixes-umu/umu-nikke.py
 
 diff --git a/gamefixes-umu/umu-nikke.py b/gamefixes-umu/umu-nikke.py
@@ -15,7 +17,7 @@ new file mode 100644
 index 0000000..45ae08c
 --- /dev/null
 +++ b/gamefixes-umu/umu-nikke.py
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,15 @@
 +"""GODDESS OF VICTORY: NIKKE"""
 +
 +from protonfixes import util
@@ -25,6 +27,12 @@ index 0000000..45ae08c
 +    """The launcher locks its repair and download options when it detects a Steam launch."""
 +    util.del_environment('SteamGameId')
 +    util.del_environment('SteamAppId')
++    util.set_environment('WINE_KERNEL_DRIVER_ENTRY', '1')
++    # Start the packaged Wine service on prefix boot for the driver's process lookup.
++    util.regedit_add(
++        r'HKLM\System\CurrentControlSet\Services\SamSs',
++        'Start', 'REG_DWORD', '2',
++    )
 -- 
 2.51.0
 

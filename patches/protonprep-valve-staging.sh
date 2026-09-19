@@ -489,6 +489,9 @@ apply_all_in_dir() {
     echo "WINE: -PROTON-ANIME- win32u: prefer the X11 tray dock over SNI when the desktop can host it"
     apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
 
+    echo "WINE: -PROTON-ANIME- NIKKE driver compatibility and SamSs service"
+    apply_all_in_dir "../patches/wine-hotfixes/nikke/"
+
 ### END PROTON-ANIME CUSTOM PATCHES ###
 
     echo "WINE: RUN AUTOCONF TOOLS/MAKE_REQUESTS"

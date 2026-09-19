@@ -1,0 +1,75 @@
+From 8f0e337c4ecf6d1e9ae3e21770a1532d94c34019 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 20 Sep 2026 01:43:03 +0200
+Subject: [PATCH] ntoskrnl: Dispatch ExQueueWorkItem on the thread pool.
+
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c        | 41 +++++++++++++++++++++++++++++
+ dlls/ntoskrnl.exe/ntoskrnl.exe.spec |  2 +-
+ 2 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index b8f75d0..0573a4e 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -1463,6 +1463,47 @@ void WINAPI IoQueueWorkItem( PIO_WORKITEM work_item, PIO_WORKITEM_ROUTINE worker
+     TrySubmitThreadpoolCallback( run_work_item_worker, work_item, NULL );
+ }
+ 
++/* Ex work-item dispatch, using Wine's existing thread pool. */
++struct kernel_work_item
++{
++    LIST_ENTRY list;
++    void (WINAPI *worker)(void *);
++    void *context;
++};
++
++static void WINAPI run_ex_work_item( TP_CALLBACK_INSTANCE *instance, void *argument )
++{
++    struct kernel_work_item *item = argument;
++    void (WINAPI *worker)(void *) = item->worker;
++    void *context = item->context;
++    struct _KTHREAD *thread = KeGetCurrentThread();
++    PEPROCESS old_process = thread->process;
++    CLIENT_ID old_id = thread->id;
++    TEB *old_teb = thread->teb;
++
++    /* The callback may free its work item. Do not access it after the call. */
++    item->list.Flink = NULL;
++    if (PsInitialSystemProcess)
++    {
++        thread->process = PsInitialSystemProcess;
++        thread->id.UniqueProcess = ULongToHandle(4);
++        thread->teb = NULL;
++    }
++    TRACE("calling %p(%p)\n", worker, context);
++    worker( context );
++    thread->process = old_process;
++    thread->id = old_id;
++    thread->teb = old_teb;
++}
++
++void WINAPI ExQueueWorkItem( struct kernel_work_item *item, WORK_QUEUE_TYPE type )
++{
++    TRACE("%p type %u worker %p context %p\n", item, type, item->worker, item->context);
++    /* Queue priorities are not yet differentiated, as with IoQueueWorkItem. */
++    if (!TrySubmitThreadpoolCallback( run_ex_work_item, item, NULL ))
++        ERR("Failed to queue work item %p, error %lu\n", item, GetLastError());
++}
++
+ /***********************************************************************
+  *           IoGetAttachedDevice   (NTOSKRNL.EXE.@)
+  */
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index c4267b9..308d909 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -184,7 +184,7 @@
+ @ stdcall ExLocalTimeToSystemTime(ptr ptr) RtlLocalTimeToSystemTime
+ @ stdcall ExNotifyCallback(ptr ptr ptr)
+ @ stub ExQueryPoolBlockSize
+-@ stub ExQueueWorkItem
++@ stdcall ExQueueWorkItem(ptr long)
+ @ stub ExRaiseAccessViolation
+ @ stub ExRaiseDatatypeMisalignment
+ @ stub ExRaiseException

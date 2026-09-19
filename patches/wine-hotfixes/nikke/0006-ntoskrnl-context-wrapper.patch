@@ -1,0 +1,38 @@
+From f5e313d967d47a4feb8d1f0721006a0554a43b86 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 20 Sep 2026 01:43:03 +0200
+Subject: [PATCH] ntoskrnl: Keep a callable helper behind PsGetContextThread.
+
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index caaf6ad..b8f75d0 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -2932,7 +2932,7 @@ HANDLE WINAPI PsGetThreadProcessId( PETHREAD thread )
+ /*********************************************************************
+  *           PsGetContextThread    (NTOSKRNL.@)
+  */
+-NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context)
++static DECLSPEC_NOINLINE NTSTATUS WINAPI get_thread_context(PETHREAD thread, CONTEXT *context)
+ {
+     NTSTATUS status;
+     HANDLE h;
+@@ -2951,6 +2951,15 @@ NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context)
+     return status;
+ }
+ 
++/* Keep the public entry point as a real call to the context implementation.
++ * Some callers discover that implementation through the wrapper's first
++ * direct call. The volatile result prevents tail-call conversion. */
++NTSTATUS WINAPI PsGetContextThread( PETHREAD thread, CONTEXT *context )
++{
++    volatile NTSTATUS status = get_thread_context( thread, context );
++    return status;
++}
++
+ /***********************************************************************
+  *           KeInsertQueue   (NTOSKRNL.EXE.@)
+  */

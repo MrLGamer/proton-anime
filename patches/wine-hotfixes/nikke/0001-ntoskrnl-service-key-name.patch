@@ -1,0 +1,48 @@
+From 8d5b81730604286562f07f94aab3b67b690d5dc2 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 20 Sep 2026 01:43:03 +0200
+Subject: [PATCH] ntoskrnl: Store the service leaf name separately from
+ DriverEntry path.
+
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index 267b5d0..f228781 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -4399,6 +4399,7 @@ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING
+     const IMAGE_NT_HEADERS *nt;
+     const WCHAR *driver_name;
+     HMODULE module;
++    UNICODE_STRING registry_path, service_name;
+ 
+     /* Retrieve driver name from the keyname */
+     driver_name = wcsrchr( keyname->Buffer, '\\' );
+@@ -4419,10 +4420,15 @@ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING
+     TRACE_(relay)( "\1Call driver init %p (obj=%p,str=%s)\n",
+                    driver_object->DriverInit, driver_object, wine_dbgstr_w(keyname->Buffer) );
+ 
+-    status = driver_object->DriverInit( driver_object, keyname );
++    /* DriverEntry takes the full registry path, while the extension stores
++     * the service's leaf name. They must have independent storage. */
++    if (!RtlCreateUnicodeString( &service_name, driver_name )) return STATUS_NO_MEMORY;
++    registry_path = *keyname;
++    driver_object->DriverExtension->ServiceKeyName = service_name;
++    status = driver_object->DriverInit( driver_object, &registry_path );
+ 
+     TRACE_(relay)( "\1Ret  driver init %p (obj=%p,str=%s) retval=%08lx\n",
+-                   driver_object->DriverInit, driver_object, wine_dbgstr_w(keyname->Buffer), status );
++                   driver_object->DriverInit, driver_object, wine_dbgstr_w(registry_path.Buffer), status );
+ 
+     TRACE( "init done for %s obj %p\n", wine_dbgstr_w(driver_name), driver_object );
+     TRACE( "- DriverInit = %p\n", driver_object->DriverInit );
+@@ -4431,6 +4437,7 @@ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING
+     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
+         TRACE( "- MajorFunction[%d] = %p\n", i, driver_object->MajorFunction[i] );
+ 
++    RtlFreeUnicodeString( &registry_path );
+     return status;
+ }
+ 

@@ -1,0 +1,93 @@
+From 1e65e76082d5e3e642c4651f0b858064a3837fd3 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 20 Sep 2026 01:43:03 +0200
+Subject: [PATCH] ntoskrnl: Add opt-in emulation of a kernel-range DriverEntry
+ continuation.
+
+---
+ dlls/ntoskrnl.exe/instr.c    |  5 ++++
+ dlls/ntoskrnl.exe/ntoskrnl.c | 47 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+)
+
+diff --git a/dlls/ntoskrnl.exe/instr.c b/dlls/ntoskrnl.exe/instr.c
+index 0cf0dbf..46468ed 100644
+--- a/dlls/ntoskrnl.exe/instr.c
++++ b/dlls/ntoskrnl.exe/instr.c
+@@ -957,6 +957,11 @@ LONG CALLBACK vectored_handler( EXCEPTION_POINTERS *ptrs )
+ {
+     EXCEPTION_RECORD *record = ptrs->ExceptionRecord;
+     CONTEXT *context = ptrs->ContextRecord;
++#if !defined(__arm64ec__)
++    extern BOOL emulate_kernel_driver_return( EXCEPTION_RECORD *, CONTEXT * );
++    if (emulate_kernel_driver_return( record, context )) return EXCEPTION_CONTINUE_EXECUTION;
++#endif
++
+ 
+     if (record->ExceptionCode == EXCEPTION_PRIV_INSTRUCTION ||
+         (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index f228781..80a3748 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -4391,6 +4391,43 @@ static HMODULE load_driver( const WCHAR *driver_name, const UNICODE_STRING *keyn
+     return module;
+ }
+ 
++#if defined(__x86_64__) && !defined(__arm64ec__)
++/* Opt-in entry trampoline. The high return address is an
++ * emulated continuation, never a mapping into the host kernel. */
++extern NTSTATUS WINAPI call_kernel_driver( PDRIVER_INITIALIZE entry,
++                                          DRIVER_OBJECT *driver, UNICODE_STRING *path );
++extern void kernel_driver_return(void);
++
++__ASM_GLOBAL_FUNC( call_kernel_driver,
++    "subq $0x28,%rsp\n\t"
++    __ASM_SEH(".seh_stackalloc 0x28\n\t")
++    __ASM_SEH(".seh_endprologue\n\t")
++    "movq %rcx,%r11\n\t"
++    "movq %rdx,%rcx\n\t"
++    "movq %r8,%rdx\n\t"
++    "leaq kernel_driver_return(%rip),%rax\n\t"
++    "movabsq $0xffff800000000000,%r10\n\t"
++    "orq %r10,%rax\n\t"
++    "pushq %rax\n\t"
++    "jmp *%r11\n\t"
++    ".globl kernel_driver_return\n"
++    "kernel_driver_return:\n\t"
++    "addq $0x28,%rsp\n\t"
++    "ret" );
++
++BOOL emulate_kernel_driver_return( EXCEPTION_RECORD *record, CONTEXT *context )
++{
++    ULONG_PTR continuation = (ULONG_PTR)kernel_driver_return;
++    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION ||
++        record->NumberParameters < 2 ||
++        record->ExceptionInformation[0] != EXCEPTION_EXECUTE_FAULT ||
++        context->Rip != (continuation | 0xffff800000000000ull))
++        return FALSE;
++    context->Rip = continuation;
++    return TRUE;
++}
++#endif
++
+ /* call the driver init entry point */
+ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING *keyname )
+ {
+@@ -4425,7 +4462,17 @@ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING
+     if (!RtlCreateUnicodeString( &service_name, driver_name )) return STATUS_NO_MEMORY;
+     registry_path = *keyname;
+     driver_object->DriverExtension->ServiceKeyName = service_name;
++#if defined(__x86_64__) && !defined(__arm64ec__)
++    {
++        char enable[2];
++        if (!__wine_get_unix_env( "WINE_KERNEL_DRIVER_ENTRY", enable, sizeof(enable) ) && enable[0] == '1')
++            status = call_kernel_driver( driver_object->DriverInit, driver_object, &registry_path );
++        else
++            status = driver_object->DriverInit( driver_object, &registry_path );
++    }
++#else
+     status = driver_object->DriverInit( driver_object, &registry_path );
++#endif
+ 
+     TRACE_(relay)( "\1Ret  driver init %p (obj=%p,str=%s) retval=%08lx\n",
+                    driver_object->DriverInit, driver_object, wine_dbgstr_w(registry_path.Buffer), status );
