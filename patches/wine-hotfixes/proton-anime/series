@@ -26,3 +26,15 @@ desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
 wuwa/0002-HACK-keep-overlays-out-of-Wuthering-Waves-in-game-web-popups.patch
 desktop/0007-win32u-Prefer-the-X11-tray-dock-over-SNI-when-the-desktop-can-host-it.patch
 pdh/0001-pdh-Avoid-access-violation-in-PdhCloseQuery-on-bad-handle.patch
+
+# NIKKE: ACE kernel driver compatibility and the SamSs service it looks for.
+nikke/0001-ntoskrnl.exe-Implement-MmMapLockedPagesSpecifyCache.patch
+nikke/0002-ntoskrnl.exe-Implement-MmUnmapLockedPages.patch
+nikke/0003-ntoskrnl.exe-Implement-MmProbeAndLockPages-and-MmUnl.patch
+nikke/0004-ntoskrnl.exe-Implement-MmBuildMdlForNonPagedPool.patch
+nikke/0005-ntoskrnl.exe-Call-DriverInit-with-bits-48-64-of-retu.patch
+nikke/0006-ntoskrnl.exe-Add-MmCopyMemory-stub.patch
+nikke/0007-ntoskrnl.exe-Pass-only-the-service-name-in-DriverExt.patch
+nikke/0008-ntoskrnl.exe-Keep-section-views-mapped-while-a-locke.patch
+nikke/0009-ntoskrnl.exe-Add-call-wrapper-for-PsGetContextThread.patch
+nikke/0010-programs-Add-SamSs-service-stub.patch

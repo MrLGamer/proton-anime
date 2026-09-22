@@ -1,0 +1,80 @@
+From 50e0c846800c398f8c843e0dff80e26a4f327f93 Mon Sep 17 00:00:00 2001
+From: Michel Weinachter <michel@weinachter.com>
+Date: Wed, 2 Sep 2026 11:30:08 +0200
+Subject: [PATCH 04/10] ntoskrnl.exe: Implement MmBuildMdlForNonPagedPool().
+
+A driver's non-paged pool is ordinary resident memory in the driver host
+process here, so there are no page frame numbers to fill in; recording
+MDL_SOURCE_IS_NONPAGED_POOL and the mapped address is all a caller can
+observe, and it is what lets a driver go on to call MmMapLockedPages() on the
+descriptor.
+
+Add tests for the nonpaged-pool MDL flags and mapped address.
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c     |  5 ++++-
+ dlls/ntoskrnl.exe/tests/driver.c | 26 +++++++++++++++++++++++++-
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index eaaabfb..2eac164 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -3077,7 +3077,10 @@ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS
+  */
+ void WINAPI MmBuildMdlForNonPagedPool(MDL *mdl)
+ {
+-    FIXME("stub: %p\n", mdl);
++    TRACE("%p\n", mdl);
++
++    mdl->MdlFlags |= MDL_SOURCE_IS_NONPAGED_POOL;
++    mdl->MappedSystemVa = (char *)mdl->StartVa + mdl->ByteOffset;
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/ntoskrnl.exe/tests/driver.c b/dlls/ntoskrnl.exe/tests/driver.c
+index faa8165..32ddff0 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.c
++++ b/dlls/ntoskrnl.exe/tests/driver.c
+@@ -280,7 +280,7 @@ static void test_queue(void)
+ static void test_mdl_map(void)
+ {
+     char buffer[20] = "test buffer";
+-    void *addr;
++    void *addr, *pool;
+     MDL *mdl;
+ 
+     mdl = IoAllocateMdl(buffer, sizeof(buffer), FALSE, FALSE, NULL);
+@@ -315,6 +315,30 @@ static void test_mdl_map(void)
+     MmUnlockPages(mdl);
+     ok(!(mdl->MdlFlags & MDL_PAGES_LOCKED), "got flags %#x\n", mdl->MdlFlags);
+     IoFreeMdl(mdl);
++
++    pool = ExAllocatePool(NonPagedPool, sizeof(buffer));
++    ok(pool != NULL, "ExAllocatePool failed\n");
++    memcpy(pool, buffer, sizeof(buffer));
++
++    mdl = IoAllocateMdl(pool, sizeof(buffer), FALSE, FALSE, NULL);
++    ok(mdl != NULL, "IoAllocateMdl failed\n");
++    ok(!(mdl->MdlFlags & MDL_SOURCE_IS_NONPAGED_POOL), "got flags %#x\n", mdl->MdlFlags);
++
++    MmBuildMdlForNonPagedPool(mdl);
++    ok(mdl->MdlFlags & MDL_SOURCE_IS_NONPAGED_POOL, "got flags %#x\n", mdl->MdlFlags);
++    ok(mdl->MappedSystemVa == (char *)mdl->StartVa + mdl->ByteOffset,
++       "got %p, expected %p\n", mdl->MappedSystemVa, (char *)mdl->StartVa + mdl->ByteOffset);
++    ok(!(mdl->MdlFlags & MDL_PAGES_LOCKED), "got flags %#x\n", mdl->MdlFlags);
++    ok(!(mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA), "got flags %#x\n", mdl->MdlFlags);
++
++    addr = MmMapLockedPages(mdl, KernelMode);
++    ok(addr != NULL, "MmMapLockedPages failed\n");
++    ok(mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA, "got flags %#x\n", mdl->MdlFlags);
++    if (addr != NULL)
++        ok(!kmemcmp(addr, buffer, sizeof(buffer)), "Unexpected data in mapped memory\n");
++
++    IoFreeMdl(mdl);
++    ExFreePool(pool);
+ }
+ 
+ static void test_init_funcs(void)
+-- 
+2.53.0.697.g625c4fb2daa
+
