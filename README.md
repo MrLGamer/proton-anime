@@ -132,9 +132,9 @@ tar -xf anime-proton-localbuild.tar.gz -C ~/.steam/steam/compatibilitytools.d/
 Restart Steam afterwards and select `anime-proton-localbuild` as described in
 [Enabling in Steam](#enabling-in-steam).
 
-If you want to add your own Wine patches: drop them into `patches/`, add a patch line for
-them in `patches/protonprep-valve-staging.sh` under `#WINE CUSTOM PATCHES` in the same way
-the others are done, and rebuild.
+If you want to add your own Wine patches: drop them into the matching game or component
+folder under `patches/wine-hotfixes/proton-anime/` (or a new one), add a line for them to
+the `series` file there after anything they depend on, and rebuild.
 
 ## Anime-game specific fixes
 
