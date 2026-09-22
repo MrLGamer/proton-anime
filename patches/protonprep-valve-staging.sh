@@ -13,6 +13,16 @@ apply_all_in_dir() {
     done
 }
 
+apply_patch_series() {
+    local dir="$1" entry
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        case "$entry" in
+            ''|\#*) continue ;;
+        esac
+        apply_patch "$dir/$entry" || return 1
+    done < "$dir/series"
+}
+
 ### (1) PREP SECTION ###
 
     # Wine-Mono is reset from its pinned release archive rather than a Git submodule.
@@ -469,25 +479,9 @@ apply_all_in_dir() {
 
 ### (2-8) PROTON-ANIME CUSTOM PATCHES ###
 
-    echo "WINE: -PROTON-ANIME- HACK: kernelbase d3d11 redirect for XXMI model importers"
-    apply_patch "../patches/proton/0002-HACK-kernelbase-redirect-d3d11-for-XXMI-model-importers.patch"
-
-    echo "WINE: -PROTON-ANIME- HACK: kernelbase dxgi redirect for ReShade"
-    apply_patch "../patches/proton/0003-HACK-kernelbase-redirect-dxgi-for-ReShade.patch"
-
-    # HSR hacks ported from https://repo.tukandev.com/TTL-extras/sparkle
-    echo "WINE: -PROTON-ANIME- HACK: HSR wintrust catalog stub + first-request block (StarRail.exe)"
-    echo "WINE: -PROTON-ANIME- HACK: NTE hide-launcher mode (PROTON_NTE_HIDE_LAUNCHER=1)"
-    echo "WINE: -PROTON-ANIME- re-enable GE's X11 fallback for cross-process launcher UIs under winewayland + Kuro launcher"
-    echo "WINE: -PROTON-ANIME- compose the Kuro launcher's WebView2 on top of its layered WPF window"
-    echo "WINE: -PROTON-ANIME- HACK: composite the GRYPHLINK launcher's window alpha"
-    echo "WINE: -PROTON-ANIME- HACK: apply the color key to KRWebView popups"
-    echo "WINE: -PROTON-ANIME- HACK: keep Wuthering Waves overlay dialogs unmapped under Wine-Wayland"
-    echo "WINE: -PROTON-ANIME- server: only close a desktop once its owner is its last user"
-    echo "WINE: -PROTON-ANIME- user32: let ShutdownBlockReasonCreate and Destroy succeed"
-    echo "WINE: -PROTON-ANIME- HACK: keep overlays out of Wuthering Waves in-game web popups"
-    echo "WINE: -PROTON-ANIME- win32u: prefer the X11 tray dock over SNI when the desktop can host it"
-    apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
+    # The series file orders the patches across the game and component folders.
+    echo "WINE: -PROTON-ANIME- apply game and component patches"
+    apply_patch_series "../patches/wine-hotfixes/proton-anime" || exit 1
 
 ### END PROTON-ANIME CUSTOM PATCHES ###
 

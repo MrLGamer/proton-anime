@@ -1,0 +1,27 @@
+# Application order; paths are relative to this directory.
+# Add new patches here explicitly, after their prerequisites.
+
+modding/0001-HACK-kernelbase-redirect-d3d11-for-XXMI-model-importers.patch
+modding/0002-HACK-kernelbase-redirect-dxgi-for-ReShade.patch
+hsr/0001-HACK-wintrust-stub-catalog-checks-for-Honkai-StarRail.patch
+hsr/0002-HACK-ws2_32-block-first-connect-send-for-Honkai-StarRail.patch
+nte/0001-HACK-kernelbase-append-autoplay-to-NTE-launcher.patch
+nte/0002-HACK-shell32-suppress-NTE-launcher-tray-icon.patch
+nte/0003-HACK-kernelbase-tie-NTE-launcher-lifetime-to-HTGame.patch
+windowscodecs/0001-windowscodecs-Implement-PNG-sRGB-chunk-metadata-read.patch
+hoyoplay/0001-HACK-win32u-shape-the-sizing-frame-out-of-HoYoPlay-windows.patch
+genshin/0001-HACK-kernelbase-unlock-Genshin-Impact-frame-rate-cap.patch
+desktop/0001-winex11-Detect-the-AltGr-modifier-mask-from-the-modi.patch
+desktop/0002-user32-Use-X11-for-cross-process-launcher-UIs-under-Wine-Wayland.patch
+kuro/0001-HACK-user32-run-the-Kuro-launcher-on-X11-under-Wine-Wayland.patch
+desktop/0003-winex11-Offset-other-process-client-surfaces-by-the-toplevel-client-origin.patch
+desktop/0004-server-Compose-self-presenting-children-on-top-of-layered-windows.patch
+kuro/0002-winex11-Draw-into-other-process-toplevels-with-their-visual.patch
+kuro/0003-HACK-ntdll-report-Windows-7-to-the-Kuro-launcher-s-WebView2-runtime.patch
+endfield/0001-HACK-winex11-composite-the-GRYPHLINK-launcher-s-window-alpha.patch
+kuro/0004-HACK-winex11-apply-the-color-key-to-KRWebView-popups.patch
+wuwa/0001-HACK-winewayland-keep-Wuthering-Waves-overlay-dialogs-unmapped.patch
+desktop/0005-server-Only-close-a-desktop-once-its-owner-is-its-last-user.patch
+desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
+wuwa/0002-HACK-keep-overlays-out-of-Wuthering-Waves-in-game-web-popups.patch
+desktop/0007-win32u-Prefer-the-X11-tray-dock-over-SNI-when-the-desktop-can-host-it.patch
