@@ -25,3 +25,4 @@ desktop/0005-server-Only-close-a-desktop-once-its-owner-is-its-last-user.patch
 desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
 wuwa/0002-HACK-keep-overlays-out-of-Wuthering-Waves-in-game-web-popups.patch
 desktop/0007-win32u-Prefer-the-X11-tray-dock-over-SNI-when-the-desktop-can-host-it.patch
+pdh/0001-pdh-Avoid-access-violation-in-PdhCloseQuery-on-bad-handle.patch
