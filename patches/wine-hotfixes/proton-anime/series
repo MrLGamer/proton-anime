@@ -25,6 +25,8 @@ desktop/0005-server-Only-close-a-desktop-once-its-owner-is-its-last-user.patch
 desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
 wuwa/0002-HACK-keep-overlays-out-of-Wuthering-Waves-in-game-web-popups.patch
 pdh/0001-pdh-Avoid-access-violation-in-PdhCloseQuery-on-bad-handle.patch
+mfplat/0001-mfplat-tests-Add-some-tests-for-DXGI_FORMAT_R8_UINT-buffers.patch
+mfplat/0002-mfplat-Handle-R8_UINT-format-in-MFCreateDXGISurfaceBuffer.patch
 nikke/0001-ntoskrnl.exe-Call-DriverInit-with-bits-48-64-of-retu.patch
 nikke/0002-ntoskrnl.exe-Add-MmCopyMemory-stub.patch
 nikke/0003-ntoskrnl.exe-Pass-only-the-service-name-in-DriverExt.patch
