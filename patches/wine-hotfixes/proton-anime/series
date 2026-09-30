@@ -26,6 +26,8 @@ desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
 wuwa/0002-HACK-keep-overlays-out-of-Wuthering-Waves-in-game-web-popups.patch
 desktop/0007-win32u-Prefer-the-X11-tray-dock-over-SNI-when-the-desktop-can-host-it.patch
 pdh/0001-pdh-Avoid-access-violation-in-PdhCloseQuery-on-bad-handle.patch
+mfplat/0001-mfplat-tests-Add-some-tests-for-DXGI_FORMAT_R8_UINT-buffers.patch
+mfplat/0002-mfplat-Handle-R8_UINT-format-in-MFCreateDXGISurfaceBuffer.patch
 
 # NIKKE: ACE kernel driver compatibility and the SamSs service it looks for.
 nikke/0001-ntoskrnl.exe-Implement-MmMapLockedPagesSpecifyCache.patch
