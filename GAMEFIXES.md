@@ -11,6 +11,7 @@ cutscene playback, startup timeouts) are applied automatically and are not liste
 | <tt>PROTON_NTE_HIDE_LAUNCHER_TIMEOUT</tt> | Seconds to wait for `HTGame.exe` before closing the launcher anyway (default `300`, `0` waits forever). |
 | <tt>PROTON_HSR_FPS</tt> | Unlock the HSR frame rate cap, e.g. `PROTON_HSR_FPS=120`. Needs one prior game launch. Changing in-game graphics settings reverts the cap until the next launch. |
 | <tt>PROTON_GI_FPS</tt> | Unlock the GI frame rate cap, e.g. `PROTON_GI_FPS=120`. Works for `GenshinImpact.exe` and `YuanShen.exe`. |
+| <tt>PROTON_KURO_KEEP_LAUNCHER</tt> | The WuWa and PGR launchers are closed 10 seconds after the game starts, which frees about 2 GB of RAM. Set to `1` to keep them open. |
 | <tt>PROTON_WUWA_ENGINE_VARS</tt> | Comma-separated console variables written to WuWa's `UserEngine.ini` (LOD tweaks some WWMI mods ask for). The file is rewritten with exactly these variables. When unset it is left untouched. |
 
 Example for the WuWa engine variables:

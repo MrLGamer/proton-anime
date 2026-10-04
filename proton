@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import shlex
+import signal
 import socket
 import threading
 import uuid
@@ -51,6 +52,14 @@ def _is_hoyoplay(exe_dir):
     except OSError:
         return False
 
+# Kuro launcher: versioned subdir with launcher_main.dll
+def _is_kuro_launcher(exe_dir):
+    try:
+        return any(os.path.isfile(os.path.join(exe_dir, d, "launcher_main.dll"))
+                   for d in os.listdir(exe_dir))
+    except OSError:
+        return False
+
 # Fill in UMU_ID for direct umu launches of known games so their protonfix
 # runs. Must happen before the protonfixes import resolves umu-default.
 def _route_umu_id():
@@ -67,14 +76,8 @@ def _route_umu_id():
         if _is_hoyoplay(exe_dir):
             # The games HoYoPlay spawns need the steam.exe AC launch fix
             umu_id = "umu-zenlesszonezero"
-        else:
-            # Kuro launcher: versioned subdir with launcher_main.dll
-            try:
-                if any(os.path.isfile(os.path.join(exe_dir, d, "launcher_main.dll"))
-                        for d in os.listdir(exe_dir)):
-                    umu_id = "umu-3513350"
-            except OSError:
-                pass
+        elif _is_kuro_launcher(exe_dir):
+            umu_id = "umu-3513350"
     if umu_id:
         os.environ["UMU_ID"] = umu_id
 
@@ -136,6 +139,54 @@ def _prewarm_dns():
         threading.Thread(target=resolve, args=(host,), daemon=True).start()
 
 _prewarm_dns()
+
+# Kuro's launcher keeps its WebView2 running for the whole game session, over
+# 2 GB, and the game doesn't need it. Close it once the game is up, like the
+# launcher's own exitAfterGameStarted mode. PROTON_KURO_KEEP_LAUNCHER=1 keeps it.
+_KURO_GAME_EXES = ("client-win64-shipping.exe", "pgr.exe")
+
+def _close_kuro_launcher_after_game_start():
+    if (len(sys.argv) < 3 or sys.argv[1] not in ("run", "waitforexitandrun")
+            or os.path.basename(sys.argv[2]) != "launcher.exe"
+            or not _is_kuro_launcher(os.path.dirname(sys.argv[2]))
+            or os.environ.get("PROTON_KURO_KEEP_LAUNCHER", "0") not in ("", "0")):
+        return
+    session = b"\0STEAM_COMPAT_DATA_PATH=" + os.fsencode(os.environ.get("STEAM_COMPAT_DATA_PATH", "")) + b"\0"
+
+    def session_pids(names):
+        pids = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    m = re.search(rb"([^\\/\0]+\.exe)", f.read(4096), re.IGNORECASE)
+                if not m or m.group(1).decode(errors="replace").lower() not in names:
+                    continue
+                with open(f"/proc/{pid}/environ", "rb") as f:
+                    if session not in b"\0" + f.read():
+                        continue
+            except OSError:
+                continue
+            pids.append(int(pid))
+        return pids
+
+    def watch():
+        while True:
+            while not session_pids(_KURO_GAME_EXES):
+                time.sleep(2)
+            time.sleep(10)
+            if session_pids(_KURO_GAME_EXES):
+                break
+        for pid in session_pids(("launcher_main.exe",)):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    threading.Thread(target=watch, daemon=True).start()
+
+_close_kuro_launcher_after_game_start()
 
 import protonfixes
 
