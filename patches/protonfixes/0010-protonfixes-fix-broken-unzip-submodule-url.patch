@@ -1,0 +1,22 @@
+From 509f7a4e1bfd38702858d8fa45174ca1da8a11fa Mon Sep 17 00:00:00 2001
+From: GloriousEggroll <gloriouseggroll@gmail.com>
+Date: Sun, 20 Sep 2026 13:37:53 -0600
+Subject: [PATCH] fix broken unzip submodule url
+
+---
+ Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 4dcd8515..9a888019 100644
+--- a/Makefile
++++ b/Makefile
+@@ -145,7 +145,7 @@ DEFINES = -DACORN_FTYPE_NFS -DWILD_STOP_AT_DIR -DLARGE_FILE_SUPPORT \
+  -DDATE_FORMAT=DF_YMD -DUSE_BZIP2 -DIZ_HAVE_UXUIDGID -DNOMEMCPY \
+  -DNO_WORKING_ISPRINT
+ UNZIP_VERSION := 6.0
+-UNZIP_DEBIAN_REVISION := 29
++UNZIP_DEBIAN_REVISION := 29+deb13u1
+ UNZIP_BASE_URL := https://deb.debian.org/debian/pool/main/u/unzip
+ UNZIP_ORIG_TARBALL := unzip_$(UNZIP_VERSION).orig.tar.gz
+ UNZIP_DEBIAN_TARBALL := unzip_$(UNZIP_VERSION)-$(UNZIP_DEBIAN_REVISION).debian.tar.xz
