@@ -1,0 +1,83 @@
+From a26a71d1ab2ac3dd82615057437217c91b49408e Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 4 Oct 2026 14:12:50 +0200
+Subject: [PATCH] winex11: Keep the alpha of the Kuro launcher's webview
+
+The new Wuthering Waves launcher page has rounded corners, and they show
+up black. The WebView2 GPU process renders into a window with the default
+24-bit visual, so the transparent corners lose their alpha before they are
+drawn onto the launcher's ARGB toplevel.
+
+Create that window with the ARGB visual and read it back with the same
+visual, so the alpha survives the copy. Pages without transparency look
+the same as before.
+
+Only applies to Kuro's bundled WebView2 runtime.
+---
+ dlls/winex11.drv/init.c | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index b8b4e34..e7d0ccc 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -367,6 +367,12 @@ BOOL is_kuro_webview_process(void)
+     return cached;
+ }
+ 
++/* the launcher page has rounded corners, keep its alpha all the way to the toplevel */
++static BOOL kuro_webview_alpha(void)
++{
++    return is_kuro_webview_process() && argb_visual.visualid;
++}
++
+ static BOOL image_path_has_folder( const UNICODE_STRING *path, const WCHAR *folder, unsigned int folder_len )
+ {
+     unsigned int i, j, len = path->Length / sizeof(WCHAR);
+@@ -622,7 +628,8 @@ static void client_surface_update_offscreen( HWND hwnd, struct x11drv_client_sur
+         UNICODE_STRING device_str = RTL_CONSTANT_STRING(displayW);
+         surface->hdc_dst = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+         surface->hdc_src = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+-        set_dc_drawable( surface->hdc_src, surface->window, &surface->rect, IncludeInferiors, NULL, FALSE );
++        set_dc_drawable( surface->hdc_src, surface->window, &surface->rect, IncludeInferiors,
++                         kuro_webview_alpha() ? &argb_visual : NULL, FALSE );
+ #ifdef SONAME_LIBXCOMPOSITE
+         if (usexcomposite) pXCompositeRedirectWindow( gdi_display, surface->window, CompositeRedirectManual );
+ #endif
+@@ -1233,7 +1240,7 @@ Window x11drv_client_surface_create( HWND hwnd, BOOL raw, int format, struct cli
+      * Vulkan surface window so the X compositor can blend its per-pixel alpha. The env
+      * var already scopes this to the opted-in game, so apply unconditionally — the
+      * window may not be WS_EX_LAYERED yet when the Vulkan surface is first created. */
+-    if (!format && (layered_overlay_alpha_enabled() || is_gryphlink_launcher()))
++    if (!format && (layered_overlay_alpha_enabled() || is_gryphlink_launcher() || kuro_webview_alpha()))
+     {
+         if (argb_visual.visualid)
+         {
+@@ -1260,6 +1267,7 @@ Window x11drv_client_surface_create( HWND hwnd, BOOL raw, int format, struct cli
+         XSetWindowAttributes attr;
+         RECT rect = surface->rect;
+         unsigned int width, height;
++        const XVisualInfo *win_visual = kuro_webview_alpha() && !format ? &visual : &default_visual;
+ 
+         if (disable_opwr() && hwnd != NtUserGetDesktopWindow())
+         {
+@@ -1269,13 +1277,13 @@ Window x11drv_client_surface_create( HWND hwnd, BOOL raw, int format, struct cli
+ 
+         width = max( rect.right - rect.left, 1 );
+         height = max( rect.bottom - rect.top, 1 );
+-        attr.colormap = default_colormap;
++        attr.colormap = win_visual == &default_visual ? default_colormap : colormap;
+         attr.bit_gravity = NorthWestGravity;
+         attr.win_gravity = NorthWestGravity;
+         attr.backing_store = NotUseful;
+         attr.border_pixel = 0;
+-        surface->window = XCreateWindow( gdi_display, get_dummy_parent(), 0, 0, width, height, 0, default_visual.depth, InputOutput,
+-                                         default_visual.visual, CWBitGravity | CWWinGravity | CWBackingStore | CWColormap | CWBorderPixel, &attr );
++        surface->window = XCreateWindow( gdi_display, get_dummy_parent(), 0, 0, width, height, 0, win_visual->depth, InputOutput,
++                                         win_visual->visual, CWBitGravity | CWWinGravity | CWBackingStore | CWColormap | CWBorderPixel, &attr );
+         if (surface->window)
+         {
+             XMapWindow( gdi_display, surface->window );
+-- 
+2.51.0
+
