@@ -20,6 +20,7 @@ kuro/0002-winex11-Draw-into-other-process-toplevels-with-their-visual.patch
 kuro/0003-HACK-ntdll-report-Windows-7-to-the-Kuro-launcher-s-WebView2-runtime.patch
 endfield/0001-HACK-winex11-composite-the-GRYPHLINK-launcher-s-window-alpha.patch
 kuro/0004-HACK-winex11-apply-the-color-key-to-KRWebView-popups.patch
+kuro/0005-winex11-Keep-the-alpha-of-the-Kuro-launcher-s-webview.patch
 wuwa/0001-HACK-winewayland-keep-Wuthering-Waves-overlay-dialogs-unmapped.patch
 desktop/0005-server-Only-close-a-desktop-once-its-owner-is-its-last-user.patch
 desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
