@@ -1,0 +1,233 @@
+From 8279171ca678e75aaacc951d16a86448bbbf1e96 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sun, 4 Oct 2026 20:40:53 +0200
+Subject: [PATCH] server: Share the Kuro WebView2 DLLs between processes
+
+The Kuro launcher's WebView2 processes take close to 4 GB together.
+msedge.dll is 274 MB and its sections aren't page aligned in the file, so
+they can't be mmapped and every Chromium process reads its own private
+copy of it, six of them in a normal launcher session.
+
+Lay such images out once at their RVAs in the server's temp file that
+already backs shared sections, and map the sections from there. The pages
+are then shared between processes and only copied when written. The
+launcher drops by about 1.3 GB.
+
+Only applies to images with more than 1 MB of unaligned sections loaded
+by Kuro's bundled WebView2 runtime.
+---
+ dlls/ntdll/unix/virtual.c      | 10 +++--
+ include/wine/server_protocol.h |  3 +-
+ server/mapping.c               | 95 +++++++++++++++++++++++++++++++++++++++---
+ server/protocol.def            |  3 +-
+ 4 files changed, 101 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index c36e3b6..3e43a9c 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3287,6 +3287,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
+     char *ptr = view->base;
+     SIZE_T header_size, header_map_size, total_size = view->size;
+     SIZE_T align_mask = max( image_info->alignment - 1, page_mask );
++    BOOL image_layout = image_info->shared_image && shared_fd != -1;
+     INT_PTR delta;
+ 
+     TRACE_(module)( "mapping PE file %s at %p-%p\n", debugstr_us(nt_name), ptr, ptr + total_size );
+@@ -3415,9 +3416,12 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
+         if (sec[i].PointerToRawData >= st.st_size ||
+             end > ((st.st_size + sector_align) & ~sector_align) ||
+             end < file_start ||
+-            map_file_into_view( view, fd, sec[i].VirtualAddress, file_size, file_start,
+-                                VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
+-                                removable ) != STATUS_SUCCESS)
++            (image_layout ?
++             map_file_into_view( view, shared_fd, sec[i].VirtualAddress, file_size, sec[i].VirtualAddress,
++                                 VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY, FALSE ) :
++             map_file_into_view( view, fd, sec[i].VirtualAddress, file_size, file_start,
++                                 VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
++                                 removable )) != STATUS_SUCCESS)
+         {
+             ERR_(module)( "Could not map %s section %.8s, file probably truncated\n",
+                           debugstr_us(nt_name), sec[i].Name );
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 96613d5..418bdf5 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -942,7 +942,8 @@ struct pe_image_info
+     unsigned char  wine_builtin : 1;
+     unsigned char  wine_fakedll : 1;
+     unsigned char  is_hybrid : 1;
+-    unsigned char  padding : 4;
++    unsigned char  shared_image : 1;
++    unsigned char  padding : 3;
+     unsigned char  image_flags;
+     unsigned int   loader_flags;
+     unsigned int   header_size;
+diff --git a/server/mapping.c b/server/mapping.c
+index a3f54ac..913b6bc 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -95,6 +95,7 @@ struct shared_map
+     struct fd      *fd;              /* file descriptor of the mapped PE file */
+     struct file    *file;            /* temp file holding the shared data */
+     struct list     entry;           /* entry in global shared maps list */
++    int             image_layout;    /* temp file holds the whole image laid out at its RVAs */
+ };
+ 
+ static void shared_map_dump( struct object *obj, int verbose );
+@@ -651,6 +652,73 @@ static int find_committed_range( struct memory_view *view, file_pos_t start, mem
+     return 0;
+ }
+ 
++static int is_kuro_webview_process( struct process *process )
++{
++    static const WCHAR markerW[] = {'K','R','W','e','b','V','i','e','w','R','u','n','t','i','m','e'};
++    data_size_t len, i;
++
++    if (!process || !process->image) return 0;
++    len = process->imagelen / sizeof(WCHAR);
++    for (i = 0; i + ARRAY_SIZE(markerW) <= len; i++)
++        if (!memcmp( process->image + i, markerW, sizeof(markerW) )) return 1;
++    return 0;
++}
++
++/* Chromium's DLLs have sections that can't be mmapped from the file, so every process
++ * reads its own private copy of them. Lay those images out once and share the pages. */
++static int needs_image_layout( struct mapping *mapping, IMAGE_SECTION_HEADER *sec, unsigned int nb_sec )
++{
++    static const unsigned int sector_align = 0x1ff;
++    size_t unaligned = 0;
++    unsigned int i;
++
++    if (mapping->image.image_flags & IMAGE_FLAGS_ImageMappedFlat) return 0;
++    if (!current || !is_kuro_webview_process( current->process )) return 0;
++
++    for (i = 0; i < nb_sec; i++)
++    {
++        if ((sec[i].Characteristics & IMAGE_SCN_MEM_SHARED) &&
++            (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)) return 0;
++        if (!sec[i].PointerToRawData || !sec[i].SizeOfRawData) continue;
++        if ((sec[i].PointerToRawData & ~sector_align) & page_mask) unaligned += sec[i].SizeOfRawData;
++    }
++    return unaligned >= 1024 * 1024;
++}
++
++/* copy every section to its RVA in the temp file */
++static int copy_image_layout( int fd, int shared_fd, IMAGE_SECTION_HEADER *sec, unsigned int nb_sec,
++                              size_t align_mask, mem_size_t total_size )
++{
++    static const size_t chunk_size = 1024 * 1024;
++    size_t map_size, file_size, done, size;
++    off_t read_pos;
++    unsigned int i;
++    char *buffer;
++    ssize_t res;
++
++    if (!(buffer = malloc( chunk_size ))) return 0;
++
++    for (i = 0; i < nb_sec; i++)
++    {
++        get_section_sizes( &sec[i], align_mask, &map_size, &read_pos, &file_size );
++        if (!sec[i].PointerToRawData || !file_size) continue;
++        if (sec[i].VirtualAddress + file_size > total_size) goto error;
++        for (done = 0; done < file_size; done += res)
++        {
++            size = min( chunk_size, file_size - done );
++            /* a short read at EOF leaves zeros, same as the client's read() fallback */
++            if ((res = pread( fd, buffer, size, read_pos + done )) <= 0) break;
++            if (pwrite( shared_fd, buffer, res, sec[i].VirtualAddress + done ) != res) goto error;
++        }
++    }
++    free( buffer );
++    return 1;
++
++error:
++    free( buffer );
++    return 0;
++}
++
+ /* allocate and fill the temp file for a shared PE image mapping */
+ static int build_shared_mapping( struct mapping *mapping, size_t align_mask, int fd,
+                                  IMAGE_SECTION_HEADER *sec, unsigned int nb_sec )
+@@ -662,7 +730,7 @@ static int build_shared_mapping( struct mapping *mapping, size_t align_mask, int
+     size_t file_size, map_size, max_size;
+     off_t shared_pos, read_pos, write_pos;
+     char *buffer = NULL;
+-    int shared_fd;
++    int shared_fd, image_layout = needs_image_layout( mapping, sec, nb_sec );
+     long toread;
+ 
+     /* compute the total size of the shared mapping */
+@@ -678,14 +746,27 @@ static int build_shared_mapping( struct mapping *mapping, size_t align_mask, int
+             total_size += map_size;
+         }
+     }
+-    if (!total_size) return 1;  /* nothing to do */
++    if (!total_size && !image_layout) return 1;  /* nothing to do */
+ 
+-    if ((mapping->shared = get_shared_file( mapping->fd ))) return 1;
++    if ((mapping->shared = get_shared_file( mapping->fd )))
++    {
++        mapping->image.shared_image = mapping->shared->image_layout;
++        return 1;
++    }
+ 
+     /* create a temp file for the mapping */
+ 
+-    if ((shared_fd = create_temp_file( total_size )) == -1) return 0;
+-    if (!(file = create_file_for_fd( shared_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0 ))) return 0;
++    /* the image layout is only an optimization, the client reads private copies without it */
++    if (image_layout) total_size = mapping->image.map_size;
++    if ((shared_fd = create_temp_file( total_size )) == -1) return image_layout;
++    if (!(file = create_file_for_fd( shared_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0 ))) return image_layout;
++
++    if (image_layout)
++    {
++        if (copy_image_layout( fd, shared_fd, sec, nb_sec, align_mask, total_size )) goto done;
++        release_object( file );
++        return 1;
++    }
+ 
+     if (!(buffer = malloc( max_size ))) goto error;
+ 
+@@ -716,11 +797,14 @@ static int build_shared_mapping( struct mapping *mapping, size_t align_mask, int
+         if (pwrite( shared_fd, buffer, file_size, write_pos ) != file_size) goto error;
+     }
+ 
++done:
+     if (!(shared = alloc_object( &shared_map_ops ))) goto error;
+     shared->fd = (struct fd *)grab_object( mapping->fd );
+     shared->file = file;
++    shared->image_layout = image_layout;
+     list_add_head( &shared_map_list, &shared->entry );
+     mapping->shared = shared;
++    mapping->image.shared_image = image_layout;
+     free( buffer );
+     return 1;
+ 
+@@ -1035,6 +1119,7 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
+     }
+ 
+     mapping->image.is_hybrid     = 0;
++    mapping->image.shared_image  = 0;
+     mapping->image.padding       = 0;
+     mapping->image.map_addr      = get_fd_map_address( mapping->fd );
+     mapping->image.image_charact = nt.FileHeader.Characteristics;
+diff --git a/server/protocol.def b/server/protocol.def
+index 68ba3a2..8d07051 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -958,7 +958,8 @@ struct pe_image_info
+     unsigned char  wine_builtin : 1;
+     unsigned char  wine_fakedll : 1;
+     unsigned char  is_hybrid : 1;
+-    unsigned char  padding : 4;
++    unsigned char  shared_image : 1;
++    unsigned char  padding : 3;
+     unsigned char  image_flags;
+     unsigned int   loader_flags;
+     unsigned int   header_size;
+-- 
+2.51.0
+
