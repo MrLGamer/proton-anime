@@ -1,0 +1,38 @@
+From 8f594f6cc9921861e3e16029e07fd6d6a41bb9eb Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 15 Oct 2026 20:34:26 +0200
+Subject: [PATCH] protonfixes: leave XXMI injection to the XXMI Launcher
+
+The XXMI Launcher injects its own importer, so loading another one
+would inject 3dmigoto twice.
+---
+ xxmi.py | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/xxmi.py b/xxmi.py
+index 994a69d..c21735c 100644
+--- a/xxmi.py
++++ b/xxmi.py
+@@ -327,10 +327,18 @@ def __load_external_importer(folder: Path, compat_config: set, env: dict) -> Non
+ def setup_xxmi(compat_config: set, env: dict, compat_dir: str, prefix_dir: str, cmdline: list = None) -> None:
+     """usage: setup_xxmi(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir, g_session.cmdlineappend)"""
+     external = env.get('PROTON_LOAD_EXTERNAL_XXMI', '')
++    exe = Path(sys.argv[2]) if len(sys.argv) > 2 else None
++    # the XXMI Launcher injects its own importer, loading another one would inject it twice
++    if exe and exe.name.lower() == 'xxmi launcher.exe':
++        requested = {*__importers, 'xxmi'} & compat_config
++        if requested or external not in {'', '0'} or 'WINE_XXMI_PATH' in env:
++            log.warn('XXMI Launcher detected, ignoring the XXMI variables')
++        compat_config.difference_update(requested)
++        env.pop('WINE_XXMI_PATH', None)
++        return
+     if external not in {'', '0'}:
+         __load_external_importer(Path(external).expanduser().absolute(), compat_config, env)
+         return
+-    exe = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+     enabled = [name for name in __importers if name in compat_config]
+     env_var = None
+     if not enabled and 'xxmi' in compat_config:
+-- 
+2.53.0.697.g625c4fb2daa
+
