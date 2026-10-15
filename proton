@@ -194,7 +194,7 @@ import protonfixes
 #and edit it if needed.
 import utilities
 
-CURRENT_PREFIX_VERSION="Anime-Proton11-1"
+CURRENT_PREFIX_VERSION="Anime-Proton11-6"
 
 PFX="Proton: "
 ld_path_var = "LD_LIBRARY_PATH"
