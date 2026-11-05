@@ -92,6 +92,9 @@ apply_patch_series() {
     echo "DISCORD: -DISCORD RPC BRIDGE- patch steam/umu helpers"
     apply_all_in_dir "patches/discordrpc/helpers"
 
+    echo "HELPERS: start the x64 ACE base driver on ARM64"
+    apply_all_in_dir "patches/helpers"
+
     git checkout -- \
         lsteamclient/Makefile.in \
         lsteamclient/gen_wrapper.py \
@@ -439,6 +442,9 @@ apply_patch_series() {
 
     echo "WINE: -HOTFIX- Keep builtin AMD AGS ahead of the native-version heuristic"
     apply_patch "../patches/wine-hotfixes/pending/ntdll-keep-builtin-amd-ags-ahead-of-version-heuristic.patch"
+
+    echo "WINE: -BACKPORT- Fix GetNativeSystemInfo() in an x86_64 process on ARM64"
+    apply_patch "../patches/wine-hotfixes/pending/kernelbase-fix-getnativesysteminfo-x86_64-on-arm64.patch"
 
 ### END WINE HOTFIX/BACKPORT SECTION ###
 

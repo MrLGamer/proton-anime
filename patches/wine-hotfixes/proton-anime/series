@@ -36,3 +36,8 @@ nikke/0004-ntoskrnl.exe-Keep-section-views-mapped-while-a-locke.patch
 nikke/0005-HACK-ntoskrnl.exe-Make-PsGetContextThread-a-thunk-ar.patch
 nikke/0006-programs-Add-SamSs-service-stub.patch
 nikke/0007-wineboot-Start-the-SamSs-service.patch
+arm64/0001-ntdll-Ignore-trailing-nulls-in-registry-value-names.patch
+arm64/0002-ntoskrnl.exe-Add-IoGetBaseFileSystemDeviceObject-stub.patch
+arm64/0003-ntoskrnl.exe-Emulate-KUSER_SHARED_DATA-loads-on-ARM64.patch
+arm64/0004-HACK-services-Run-x64-drivers-in-an-x64-winedevice-on-ARM64.patch
+arm64/0005-configure-Build-winedevice-for-ARM64EC.patch

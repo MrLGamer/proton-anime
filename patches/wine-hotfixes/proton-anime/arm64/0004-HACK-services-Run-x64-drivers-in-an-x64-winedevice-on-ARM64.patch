@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 05 Nov 2026 19:53:18 +0100
+Subject: [PATCH] HACK: services: Run x64 drivers in an x64 winedevice on ARM64.
+
+---
+ programs/services/services.h |    1 +
+ programs/services/services.c |   64 +++++++++++++++++++++++++++++++++++-------
+ 2 files changed, 54 insertions(+), 11 deletions(-)
+
+diff --git a/programs/services/services.h b/programs/services/services.h
+--- a/programs/services/services.h
++++ b/programs/services/services.h
+@@ -63,6 +63,7 @@
+     BOOL force_shutdown;
+     BOOL marked_for_delete;
+     BOOL is_wow64;
++    USHORT machine;
+     BOOL delayed_autostart;
+     struct list handles;
+ };
+diff --git a/programs/services/services.c b/programs/services/services.c
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -817,9 +817,29 @@
+     return ERROR_SUCCESS;
+ }
+ 
+-static DWORD get_winedevice_binary_path(struct service_entry *service_entry, WCHAR **path, BOOL *is_wow64)
++static USHORT get_image_machine(const WCHAR *path)
++{
++    IMAGE_DOS_HEADER dos;
++    IMAGE_NT_HEADERS64 nt;
++    USHORT machine = 0;
++    DWORD read;
++    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
++
++    if (file == INVALID_HANDLE_VALUE) return 0;
++    if (ReadFile(file, &dos, sizeof(dos), &read, NULL) && read == sizeof(dos) &&
++        SetFilePointer(file, dos.e_lfanew, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
++        ReadFile(file, &nt, sizeof(nt.Signature) + sizeof(nt.FileHeader), &read, NULL) &&
++        read == sizeof(nt.Signature) + sizeof(nt.FileHeader) && nt.Signature == IMAGE_NT_SIGNATURE)
++        machine = nt.FileHeader.Machine;
++    CloseHandle(file);
++    return machine;
++}
++
++static DWORD get_winedevice_binary_path(struct service_entry *service_entry, WCHAR **path, BOOL *is_wow64,
++                                        USHORT *machine)
+ {
+     WCHAR system_dir[MAX_PATH];
++    USHORT current, native;
+     DWORD type;
+ 
+     if (!is_win64)
+@@ -829,6 +849,11 @@
+     else
+         *is_wow64 = service_entry->is_wow64;
+ 
++    *machine = 0;
++    if (is_win64 && !*is_wow64 && IsWow64Process2(GetCurrentProcess(), &current, &native) &&
++        native == IMAGE_FILE_MACHINE_ARM64 && get_image_machine(*path) == IMAGE_FILE_MACHINE_AMD64)
++        *machine = IMAGE_FILE_MACHINE_AMD64;
++
+     GetSystemDirectoryW(system_dir, MAX_PATH);
+     free(*path);
+     if (!(*path = malloc(wcslen(system_dir) * sizeof(WCHAR) + sizeof(L"\\winedevice.exe"))))
+@@ -839,7 +864,8 @@
+     return ERROR_SUCCESS;
+ }
+ 
+-static struct process_entry *get_winedevice_process(struct service_entry *service_entry, WCHAR *path, BOOL is_wow64)
++static struct process_entry *get_winedevice_process(struct service_entry *service_entry, WCHAR *path, BOOL is_wow64,
++                                                    USHORT machine)
+ {
+     struct service_entry *winedevice_entry;
+ 
+@@ -853,6 +879,7 @@
+         if (!winedevice_entry->process) continue;
+ 
+         if (winedevice_entry->is_wow64 != is_wow64) continue;
++        if (winedevice_entry->machine != machine) continue;
+         if (!winedevice_entry->config.lpBinaryPathName) continue;
+         if (lstrcmpW(winedevice_entry->config.lpBinaryPathName, path)) continue;
+ 
+@@ -866,7 +893,7 @@
+ }
+ 
+ static DWORD add_winedevice_service(const struct service_entry *service, WCHAR *path, BOOL is_wow64,
+-                                    struct service_entry **entry)
++                                    USHORT machine, struct service_entry **entry)
+ {
+     static WCHAR name[ARRAY_SIZE(L"Winedevice") + 10]; /* lstrlenW("4294967295") */
+     static DWORD current = 0;
+@@ -884,6 +911,7 @@
+         return err;
+ 
+     (*entry)->is_wow64                  = is_wow64;
++    (*entry)->machine                   = machine;
+     (*entry)->config.dwServiceType      = SERVICE_WIN32_OWN_PROCESS;
+     (*entry)->config.dwStartType        = SERVICE_DEMAND_START;
+     (*entry)->status.dwServiceType      = (*entry)->config.dwServiceType;
+@@ -914,8 +942,12 @@
+ {
+     struct process_entry *process;
+     PROCESS_INFORMATION pi;
+-    STARTUPINFOW si;
++    STARTUPINFOEXW si;
++    DWORD_PTR attr_list[8];
++    SIZE_T attr_size = sizeof(attr_list);
++    DWORD flags = CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS;
+     BOOL is_wow64 = FALSE;
++    USHORT machine = 0;
+     HANDLE token;
+     WCHAR *path;
+     DWORD err;
+@@ -949,20 +981,20 @@
+         struct service_entry *winedevice_entry;
+         WCHAR *group;
+ 
+-        if ((err = get_winedevice_binary_path(service_entry, &path, &is_wow64)))
++        if ((err = get_winedevice_binary_path(service_entry, &path, &is_wow64, &machine)))
+         {
+             service_unlock(service_entry);
+             free(path);
+             return err;
+         }
+ 
+-        if ((process = get_winedevice_process(service_entry, path, is_wow64)))
++        if ((process = get_winedevice_process(service_entry, path, is_wow64, machine)))
+         {
+             free(path);
+             goto found;
+         }
+ 
+-        err = add_winedevice_service(service_entry, path, is_wow64, &winedevice_entry);
++        err = add_winedevice_service(service_entry, path, is_wow64, machine, &winedevice_entry);
+         free(path);
+         if (err != ERROR_SUCCESS)
+         {
+@@ -1021,12 +1053,12 @@
+         return err;
+     }
+ 
+-    ZeroMemory(&si, sizeof(STARTUPINFOW));
+-    si.cb = sizeof(STARTUPINFOW);
++    ZeroMemory(&si, sizeof(si));
++    si.StartupInfo.cb = sizeof(STARTUPINFOW);
+     if (!(service_entry->config.dwServiceType & SERVICE_INTERACTIVE_PROCESS)
+         && service_entry->config.lpDisplayName && wcscmp(service_entry->config.lpDisplayName, L"Arc Service"))
+     {
+-        si.lpDesktop = (WCHAR *)L"__wineservice_winstation\\Default";
++        si.StartupInfo.lpDesktop = (WCHAR *)L"__wineservice_winstation\\Default";
+     }
+     else if (!(service_entry->config.dwServiceType & SERVICE_INTERACTIVE_PROCESS))
+     {
+@@ -1070,7 +1102,17 @@
+     process->use_count++;
+     service_unlock(service_entry);
+ 
+-    r = CreateProcessW(NULL, path, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS, environment, NULL, &si, &pi);
++    if (service_entry->machine &&
++        InitializeProcThreadAttributeList((void *)attr_list, 1, 0, &attr_size) &&
++        UpdateProcThreadAttribute((void *)attr_list, 0, PROC_THREAD_ATTRIBUTE_MACHINE_TYPE,
++                                  &service_entry->machine, sizeof(service_entry->machine), NULL, NULL))
++    {
++        si.StartupInfo.cb = sizeof(si);
++        si.lpAttributeList = (void *)attr_list;
++        flags |= EXTENDED_STARTUPINFO_PRESENT;
++    }
++
++    r = CreateProcessW(NULL, path, NULL, NULL, FALSE, flags, environment, NULL, &si.StartupInfo, &pi);
+     free(path);
+     if (!r)
+     {
+-- 
+2.50.0
