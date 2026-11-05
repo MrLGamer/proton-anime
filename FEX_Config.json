@@ -7,6 +7,7 @@
         "MemcpySetTSOEnabled": "0",
         "HalfBarrierTSOEnabled":"1",
         "MaxInst": "500",
-        "Multiblock": "1"
+        "Multiblock": "1",
+        "HideHypervisorBit": "1"
     }
 }
