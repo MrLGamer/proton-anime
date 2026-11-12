@@ -24,6 +24,7 @@ kuro/0005-winex11-Keep-the-alpha-of-the-Kuro-launcher-s-webview.patch
 kuro/0006-server-Share-the-Kuro-WebView2-DLLs-between-processes.patch
 desktop/0005-server-Only-close-a-desktop-once-its-owner-is-its-last-user.patch
 desktop/0006-user32-Let-ShutdownBlockReasonCreate-and-Destroy-succeed.patch
+wuwa/0001-HACK-kernelbase-run-the-Kuro-web-popup-on-its-bitmap-path.patch
 pdh/0001-pdh-Avoid-access-violation-in-PdhCloseQuery-on-bad-handle.patch
 mfplat/0001-mfplat-tests-Add-some-tests-for-DXGI_FORMAT_R8_UINT-buffers.patch
 mfplat/0002-mfplat-Handle-R8_UINT-format-in-MFCreateDXGISurfaceBuffer.patch

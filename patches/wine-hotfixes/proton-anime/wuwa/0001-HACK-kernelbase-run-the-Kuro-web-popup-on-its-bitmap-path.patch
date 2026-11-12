@@ -1,0 +1,46 @@
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 12 Nov 2026 22:50:46 +0100
+Subject: [PATCH] HACK: kernelbase: run the Kuro web popup on its bitmap path
+
+Since 3.8 the in-game web popup draws through DirectComposition, which
+Wine doesn't have, so the page stays white. Kuro's SDK falls back to a
+plain bitmap path when a usebitmap.flag file sits next to its CEF
+wrapper; report that file as present. Only applies to KRWebClient.exe.
+---
+ dlls/kernelbase/file.c |   14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
+index d122faf..1afa0e7 100644
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -1765,6 +1765,18 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetFileAttributesA( LPCSTR name )
+ /**************************************************************************
+  *	GetFileAttributesW   (kernelbase.@)
+  */
++/* HACK: Kuro's in-game web popup draws through DirectComposition unless this flag file exists */
++static BOOL fake_webview_bitmap_flag( const WCHAR *name )
++{
++    static const WCHAR flagW[] = L"\\usebitmap.flag";
++    const WCHAR *image = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++    const WCHAR *exe = image ? wcsrchr( image, '\\' ) : NULL;
++    SIZE_T len = name ? wcslen( name ) : 0;
++
++    return len > ARRAY_SIZE(flagW) && !wcsicmp( name + len - (ARRAY_SIZE(flagW) - 1), flagW ) &&
++           image && !wcsicmp( exe ? exe + 1 : image, L"KRWebClient.exe" );
++}
++
+ DWORD WINAPI DECLSPEC_HOTPATCH GetFileAttributesW( LPCWSTR name )
+ {
+     FILE_BASIC_INFORMATION info;
+@@ -1774,6 +1786,8 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetFileAttributesW( LPCWSTR name )
+ 
+     TRACE( "%s\n", debugstr_w(name) );
+ 
++    if (fake_webview_bitmap_flag( name )) return FILE_ATTRIBUTE_ARCHIVE;
++
+     if (!RtlDosPathNameToNtPathName_U( name, &nt_name, NULL, NULL ))
+     {
+         SetLastError( ERROR_PATH_NOT_FOUND );
+-- 
+2.51.0
