@@ -1,0 +1,28 @@
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 12 Nov 2026 21:08:43 +0100
+Subject: [PATCH] HACK: winex11: let the Kuro launcher's WebView2 ignore noopwr
+
+Proton turns off other-process rendering for Wuthering Waves (noopwr).
+The Steam build starts the Kuro launcher under the same app id, and its
+bundled WebView2 runtime renders its page from another process, so the
+launcher page stays blank under that setting. Let that runtime ignore it.
+
+Only applies to the launcher's KRWebViewRuntime.
+---
+ dlls/winex11.drv/init.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -1002,7 +1002,8 @@
+     if (disable == -1)
+     {
+         const char *e = getenv( "WINE_DISABLE_VULKAN_OPWR" );
+-        disable = e && atoi( e );
++        /* the launcher's WebView2 needs OPWR, even under Proton's noopwr for the game */
++        disable = e && atoi( e ) && !is_kuro_webview_process();
+     }
+     return disable;
+ }
+-- 
+2.51.0
