@@ -71,6 +71,9 @@ def _route_umu_id():
         "ZenlessZoneZero.exe": "umu-zenlesszonezero",
         "nikke_launcher.exe": "umu-nikke",
     }.get(exe)
+    # the official installer (nikkeminiloader_<token>.wg.intl.exe) spawns the launcher itself
+    if exe.lower().startswith("nikkeminiloader"):
+        umu_id = "umu-nikke"
     if exe == "launcher.exe":
         exe_dir = os.path.dirname(sys.argv[2])
         if _is_hoyoplay(exe_dir):
