@@ -1,0 +1,37 @@
+From 18d504414ea808e760edd282c1a7ce08fc15a141 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 20:38:16 +0100
+Subject: [PATCH] HACK: winex11: Keep the Endfield launcher's ARGB visual through layered attribute changes
+
+Resetting the visual on every SetLayeredWindowAttributes call recreated the launcher's X window for each frame of its fade animation, which showed as flicker while it opened and closed.
+---
+ dlls/winex11.drv/window.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index fd1d9cc898a..a96396bea36 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3097,7 +3097,7 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
+             data->layered = FALSE;
+             /* Layered overlay (WINE_LAYERED_OVERLAY_ALPHA): keep the ARGB visual instead
+              * of resetting to the opaque default, so the compositor keeps blending. */
+-            if (layered_overlay_alpha_enabled() && argb_visual.visualid)
++            if ((layered_overlay_alpha_enabled() || is_gryphlink_launcher()) && argb_visual.visualid)
+                 set_window_visual( data, &argb_visual, TRUE );
+             else
+                 set_window_visual( data, &default_visual, FALSE );
+@@ -4042,7 +4042,10 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
+ 
+     if (data)
+     {
+-        set_window_visual( data, &default_visual, FALSE );
++        if (is_gryphlink_launcher() && argb_visual.visualid)
++            set_window_visual( data, &argb_visual, TRUE );
++        else
++            set_window_visual( data, &default_visual, FALSE );
+ 
+         if (data->whole_window)
+         {
+-- 
+2.51.0

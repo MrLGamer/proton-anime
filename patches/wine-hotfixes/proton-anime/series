@@ -58,3 +58,4 @@ arm64/0003-ntoskrnl.exe-Emulate-KUSER_SHARED_DATA-loads-on-ARM64.patch
 arm64/0004-HACK-services-Run-x64-drivers-in-an-x64-winedevice-on-ARM64.patch
 arm64/0005-configure-Build-winedevice-for-ARM64EC.patch
 endfield/0002-HACK-winex11-Detect-the-Epic-Games-install-of-the-Endfield-launcher.patch
+endfield/0003-HACK-winex11-Keep-the-Endfield-launcher-s-ARGB-visual-through-layered-attribute-changes.patch
