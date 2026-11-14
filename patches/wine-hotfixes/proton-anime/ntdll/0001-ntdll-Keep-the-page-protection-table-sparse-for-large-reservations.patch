@@ -1,0 +1,63 @@
+From bf6a948dd7f96492849e1bce24976f631db90cf3 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 16:59:08 +0100
+Subject: [PATCH] ntdll: Keep the page protection table sparse for large reservations
+
+Chromium reserves terabytes of address space and zeroing their protection bytes made that part of the table resident, so release whole table pages instead.
+---
+ dlls/ntdll/unix/virtual.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d5e872e..775ea0d 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1339,6 +1339,22 @@ static SIZE_T get_vprot_range_size( char *base, SIZE_T size, BYTE mask, BYTE *vp
+     return size;
+ }
+ 
++
++static inline void fill_vprot( BYTE *ptr, BYTE vprot, size_t size )
++{
++    BYTE *start = ROUND_ADDR( ptr + host_page_mask, host_page_mask );
++    BYTE *end = ROUND_ADDR( ptr + size, host_page_mask );
++
++    if (vprot || end <= start || madvise( start, end - start, MADV_DONTNEED ))
++        memset( ptr, vprot, size );
++    else
++    {
++        memset( ptr, 0, start - ptr );
++        memset( end, 0, ptr + size - end );
++    }
++}
++
++
+ /***********************************************************************
+  *           set_page_vprot
+  *
+@@ -1353,10 +1369,10 @@ static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
+     while (idx >> pages_vprot_shift != end >> pages_vprot_shift)
+     {
+         size_t dir_size = pages_vprot_mask + 1 - (idx & pages_vprot_mask);
+-        memset( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, dir_size );
++        fill_vprot( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, dir_size );
+         idx += dir_size;
+     }
+-    memset( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, end - idx );
++    fill_vprot( pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask), vprot, end - idx );
+ #else
+     memset( pages_vprot + idx, vprot, end - idx );
+ #endif
+@@ -1431,6 +1447,9 @@ static BOOL alloc_pages_vprot( const void *addr, size_t size )
+             ERR( "anon mmap error %s for vprot table, size %08lx\n", strerror(errno), pages_vprot_mask + 1 );
+             return FALSE;
+         }
++#ifdef MADV_NOHUGEPAGE
++        madvise( ptr, pages_vprot_mask + 1, MADV_NOHUGEPAGE );
++#endif
+         pages_vprot[i] = ptr;
+     }
+ #endif
+-- 
+2.51.0
+

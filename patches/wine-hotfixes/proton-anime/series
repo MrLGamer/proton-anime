@@ -29,3 +29,4 @@ wuwa/0001-HACK-kernelbase-run-the-Kuro-web-popup-on-its-bitmap-path.patch
 pdh/0001-pdh-Avoid-access-violation-in-PdhCloseQuery-on-bad-handle.patch
 mfplat/0001-mfplat-tests-Add-some-tests-for-DXGI_FORMAT_R8_UINT-buffers.patch
 mfplat/0002-mfplat-Handle-R8_UINT-format-in-MFCreateDXGISurfaceBuffer.patch
+ntdll/0001-ntdll-Keep-the-page-protection-table-sparse-for-large-reservations.patch
