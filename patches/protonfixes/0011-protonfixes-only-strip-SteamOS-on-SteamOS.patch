@@ -1,0 +1,51 @@
+From 840a63d9f81a6a40ad6f2fadfa467f7921f34f86 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 17:46:16 +0100
+Subject: [PATCH] protonfixes: only strip SteamOS from Wuthering Waves on SteamOS
+
+The gamefix drops SteamOS and SteamDeck unconditionally, so a user who
+sets SteamOS=1 on a desktop to get the Deck UI loses it. Only the Steam
+client on a Deck sets them by itself, so check the host's os-release
+and keep them everywhere else.
+---
+ gamefixes-steam/3513350.py                         |   18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/gamefixes-steam/3513350.py b/gamefixes-steam/3513350.py
+index 1d0d252..9399edb 100644
+--- a/gamefixes-steam/3513350.py
++++ b/gamefixes-steam/3513350.py
+@@ -13,8 +13,10 @@ from protonfixes.logger import log
+ def main() -> None:
+     """As of version 3.4, SteamOS/SteamDeck env vars force a broken plugin in-game to play videos."""
+     """Unsetting them to also prevent issues on Steam Decks where they are set by default."""
+-    util.del_environment('SteamOS')
+-    util.del_environment('SteamDeck')
++    """Elsewhere they can only come from the user, so leave them alone there."""
++    if _is_steamos():
++        util.del_environment('SteamOS')
++        util.del_environment('SteamDeck')
+ 
+     try:
+         _write_engine_ini()
+@@ -23,6 +25,18 @@ def main() -> None:
+         log.warn(e)
+ 
+ 
++def _is_steamos() -> bool:
++    """The container's own os-release is the runtime's, the host's sits under /run/host."""
++    for path in ('/run/host/etc/os-release', '/etc/os-release'):
++        try:
++            with open(path, encoding='utf-8') as fd:
++                data = fd.read()
++        except OSError:
++            continue
++        return 'ID=steamos' in data or 'VARIANT_ID=steamdeck' in data
++    return False
++
++
+ def _find_game_root():
+     if len(sys.argv) < 3:
+         return None
+-- 
+2.51.0
