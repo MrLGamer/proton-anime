@@ -60,6 +60,15 @@ def _is_kuro_launcher(exe_dir):
     except OSError:
         return False
 
+# Wuthering Waves game folder: "Wuthering Waves.exe" at the root, the client
+# three levels below it
+def _is_wuwa_game(exe_dir):
+    for _ in range(4):
+        if os.path.isfile(os.path.join(exe_dir, "Wuthering Waves.exe")):
+            return True
+        exe_dir = os.path.dirname(exe_dir)
+    return False
+
 # Fill in UMU_ID for direct umu launches of known games so their protonfix
 # runs. Must happen before the protonfixes import resolves umu-default.
 def _route_umu_id():
@@ -74,6 +83,8 @@ def _route_umu_id():
     # the official installer (nikkeminiloader_<token>.wg.intl.exe) spawns the launcher itself
     if exe.lower().startswith("nikkeminiloader"):
         umu_id = "umu-nikke"
+    if exe in ("Client-Win64-Shipping.exe", "Wuthering Waves.exe") and _is_wuwa_game(os.path.dirname(sys.argv[2])):
+        umu_id = "umu-3513350"
     if exe == "launcher.exe":
         exe_dir = os.path.dirname(sys.argv[2])
         if _is_hoyoplay(exe_dir):
