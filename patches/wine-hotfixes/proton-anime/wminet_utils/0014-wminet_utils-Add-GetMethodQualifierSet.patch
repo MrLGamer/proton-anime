@@ -1,0 +1,35 @@
+From f58667528a7fadd6ffae04d92b8286742a1e1d60 Mon Sep 17 00:00:00 2001
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Date: Thu, 30 Jul 2026 07:00:57 +0200
+Subject: [PATCH] wminet_utils: Add GetMethodQualifierSet.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=60036
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 36e3eb3e..01772698 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -158,3 +158,10 @@ HRESULT WINAPI GetMethod(int vFunc, IWbemClassObject *ptr, LPCWSTR wszName, LONG
+ 
+ 	return IWbemClassObject_GetMethod(ptr, wszName, lFlags, ppInSignature, ppOutSignature);
+ }
++
++HRESULT WINAPI GetMethodQualifierSet(int vFunc, IWbemClassObject *ptr, LPCWSTR wszMethod, IWbemQualifierSet **ppQualSet)
++{
++    TRACE("%i %p %s %p\n", vFunc, ptr, debugstr_w(wszMethod), ppQualSet);
++
++    return IWbemClassObject_GetMethodQualifierSet(ptr, wszMethod, ppQualSet);
++}
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index 2a1fae88..59be1f1f 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -24,7 +24,7 @@
+ @ stub GetErrorInfo
+ @ stdcall GetMethod(long ptr wstr long ptr ptr)
+ @ stub GetMethodOrigin
+-@ stub GetMethodQualifierSet
++@ stdcall GetMethodQualifierSet(long ptr wstr ptr)
+ @ stdcall GetNames(long ptr wstr long ptr ptr)
+ @ stub GetObjectText
+ @ stub GetPropertyHandle

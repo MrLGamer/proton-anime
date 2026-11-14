@@ -1,0 +1,36 @@
+From b466063d3f431e3802cc33ea65487c65430455eb Mon Sep 17 00:00:00 2001
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Date: Wed, 29 Jul 2026 07:12:50 +0200
+Subject: [PATCH] wminet_utils: Add GetMethod.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=60036
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 1778e0f9..36e3eb3e 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -150,3 +150,11 @@ HRESULT WINAPI EndMethodEnumeration(int vFunc, IWbemClassObject *ptr)
+ 
+     return IWbemClassObject_EndMethodEnumeration(ptr);
+ }
++
++HRESULT WINAPI GetMethod(int vFunc, IWbemClassObject *ptr, LPCWSTR wszName, LONG lFlags,
++    IWbemClassObject **ppInSignature, IWbemClassObject **ppOutSignature)
++{
++	TRACE("%i %p %s %lx %p %p\n", vFunc, ptr, debugstr_w(wszName), lFlags, ppInSignature, ppOutSignature);
++
++	return IWbemClassObject_GetMethod(ptr, wszName, lFlags, ppInSignature, ppOutSignature);
++}
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index bd596842..2a1fae88 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -22,7 +22,7 @@
+ @ stdcall GetCurrentApartmentType(long ptr ptr)
+ @ stub GetDemultiplexedStub
+ @ stub GetErrorInfo
+-@ stub GetMethod
++@ stdcall GetMethod(long ptr wstr long ptr ptr)
+ @ stub GetMethodOrigin
+ @ stub GetMethodQualifierSet
+ @ stdcall GetNames(long ptr wstr long ptr ptr)

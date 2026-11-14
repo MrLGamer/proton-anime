@@ -1,0 +1,44 @@
+From b1ece0ea4584d5ed50fb58cc1001a3b9060dafe6 Mon Sep 17 00:00:00 2001
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Date: Wed, 5 Aug 2026 15:47:23 +0200
+Subject: [PATCH] wminet_utils: Add GetErrorInfo.
+
+Based on a patch from tpaniaki@protonmail.com.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=60036
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 5cd92ac7..567c544f 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -179,3 +179,17 @@ HRESULT WINAPI GetPropertyQualifierSet(int vFunc, IWbemClassObject *ptr, LPCWSTR
+ 
+     return IWbemClassObject_GetPropertyQualifierSet(ptr, wszProperty, ppQualSet);
+ }
++
++IErrorInfo* WINAPI wminet_utils_GetErrorInfo(void)
++{
++    IErrorInfo *error_info = NULL;
++    HRESULT hr;
++
++    hr = GetErrorInfo(0, &error_info);
++    TRACE("returning %p, hr %#lx\n", error_info, hr);
++
++    if (FAILED(hr))
++        return NULL;
++
++    return error_info;
++}
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index e88d22d5..bdbe237d 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -21,7 +21,7 @@
+ @ stdcall Get(long ptr wstr long ptr ptr ptr)
+ @ stdcall GetCurrentApartmentType(long ptr ptr)
+ @ stub GetDemultiplexedStub
+-@ stub GetErrorInfo
++@ stdcall GetErrorInfo() wminet_utils_GetErrorInfo
+ @ stdcall GetMethod(long ptr wstr long ptr ptr)
+ @ stub GetMethodOrigin
+ @ stdcall GetMethodQualifierSet(long ptr wstr ptr)

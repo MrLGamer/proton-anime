@@ -1,0 +1,45 @@
+From c7ff5d804c62e4de9a4f5236c176a4243920c84f Mon Sep 17 00:00:00 2001
+From: Andrew Nguyen <arethusa26@gmail.com>
+Date: Sun, 8 Mar 2026 04:41:51 -0500
+Subject: [PATCH] wminet_utils: Implement CreateInstanceEnumWmi.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=59502
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 41d37518..7af46dce 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -73,6 +73,20 @@ HRESULT WINAPI ConnectServerWmi(BSTR strNetworkResource, BSTR strUser, BSTR strP
+     return hr;
+ }
+ 
++HRESULT WINAPI CreateInstanceEnumWmi(BSTR strFilter, long lFlags, IWbemContext *pCtx,
++    IEnumWbemClassObject **ppEnum, DWORD authLevel, DWORD impLevel, IWbemServices *pCurrentNamespace,
++    BSTR strUser, BSTR strPassword, BSTR strAuthority)
++{
++    TRACE("%s %lx %p %p %p\n", debugstr_w(strFilter), lFlags, pCtx, ppEnum, pCurrentNamespace);
++
++    if (!ppEnum)
++        return E_POINTER;
++
++    *ppEnum = NULL;
++
++    return IWbemServices_CreateInstanceEnum(pCurrentNamespace, strFilter, lFlags, pCtx, ppEnum);
++}
++
+ HRESULT WINAPI ExecQueryWmi(BSTR strQueryLanguage, BSTR strQuery, long lFlags, IWbemContext *pCtx,
+     IEnumWbemClassObject **ppEnum, DWORD authLevel, DWORD impLevel, IWbemServices *pCurrentNamespace,
+     BSTR strUser, BSTR strPassword, BSTR strAuthority)
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index f98ac8fd..4cc7536b 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -7,7 +7,7 @@
+ @ stub CompareTo
+ @ stdcall ConnectServerWmi(wstr wstr wstr wstr long wstr ptr ptr long long)
+ @ stub CreateClassEnumWmi
+-@ stub CreateInstanceEnumWmi
++@ stdcall CreateInstanceEnumWmi(wstr long ptr ptr long long ptr wstr wstr wstr)
+ @ stub Delete
+ @ stub DeleteMethod
+ @ stub DllCanUnloadNow

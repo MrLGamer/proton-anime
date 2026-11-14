@@ -1,0 +1,35 @@
+From b2de3ca2046c2613b086205fadacea3eb8761a38 Mon Sep 17 00:00:00 2001
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Date: Tue, 4 Aug 2026 07:45:49 +0200
+Subject: [PATCH] wminet_utils: Add GetPropertyQualifierSet.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=60036
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 1fa19199..5cd92ac7 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -172,3 +172,10 @@ HRESULT WINAPI QualifierSet_Get(int vFunc, IWbemQualifierSet* ptr, LPCWSTR wszNa
+ 
+     return IWbemQualifierSet_Get(ptr, wszName, lFlags, pVal, plFlavor);
+ }
++
++HRESULT WINAPI GetPropertyQualifierSet(int vFunc, IWbemClassObject *ptr, LPCWSTR wszProperty, IWbemQualifierSet **ppQualSet)
++{
++    TRACE("%i %p %s %p\n", vFunc, ptr, debugstr_w(wszProperty), ppQualSet);
++
++    return IWbemClassObject_GetPropertyQualifierSet(ptr, wszProperty, ppQualSet);
++}
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index 2e9065ea..e88d22d5 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -30,7 +30,7 @@
+ @ stub GetPropertyHandle
+ @ stub GetPropertyInfoByHandle
+ @ stub GetPropertyOrigin
+-@ stub GetPropertyQualifierSet
++@ stdcall GetPropertyQualifierSet(long ptr wstr ptr)
+ @ stub GetQualifierSet
+ @ stub InheritsFrom
+ @ stdcall Initialize(long)

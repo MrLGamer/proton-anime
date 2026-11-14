@@ -1,0 +1,76 @@
+From 923aa92aebdb6509245ab6bc6260562a82922b52 Mon Sep 17 00:00:00 2001
+From: Esme Povirk <esme@codeweavers.com>
+Date: Fri, 23 Jan 2026 21:53:13 +0000
+Subject: [PATCH] wminet_utils: Implement ConnectServerWmi.
+
+
+diff --git a/dlls/wminet_utils/Makefile.in b/dlls/wminet_utils/Makefile.in
+index 66326528..2df888ad 100644
+--- a/dlls/wminet_utils/Makefile.in
++++ b/dlls/wminet_utils/Makefile.in
+@@ -1,4 +1,5 @@
+ MODULE    = wminet_utils.dll
++IMPORTS   = ole32
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index f3631d36..4742b177 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -23,12 +23,42 @@
+ 
+ #define COBJMACROS
+ 
++#include "initguid.h"
+ #include "objidl.h"
++#include "wbemcli.h"
+ 
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wminet_utils);
+ 
++HRESULT WINAPI ConnectServerWmi(BSTR strNetworkResource, BSTR strUser, BSTR strPassword,
++    BSTR strLocale, long lSecurityFlags, BSTR strAuthority, IWbemContext *pCtx,
++    IWbemServices** ppNamespace, DWORD impLevel, DWORD authLevel)
++{
++    HRESULT hr;
++    IWbemLocator *locator;
++
++    TRACE("%li %li\n", impLevel, authLevel);
++
++    if (!ppNamespace)
++        return E_POINTER;
++
++    *ppNamespace = NULL;
++
++    hr = CoCreateInstance(&CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, &IID_IWbemLocator,
++        (void**)&locator);
++
++    if (SUCCEEDED(hr))
++    {
++        hr = IWbemLocator_ConnectServer(locator, strNetworkResource, strUser, strPassword,
++            strLocale, lSecurityFlags, strAuthority, pCtx, ppNamespace);
++
++        IWbemLocator_Release(locator);
++    }
++
++    return hr;
++}
++
+ HRESULT WINAPI GetCurrentApartmentType(int vFunc, IComThreadingInfo *ptr, APTTYPE *aptType)
+ {
+     TRACE("%i %p %p\n", vFunc, ptr, aptType);
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index c07713ec..2a2f35bd 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -5,7 +5,7 @@
+ @ stub Clone
+ @ stub CloneEnumWbemClassObject
+ @ stub CompareTo
+-@ stub ConnectServerWmi
++@ stdcall ConnectServerWmi(wstr wstr wstr wstr long wstr ptr ptr long long)
+ @ stub CreateClassEnumWmi
+ @ stub CreateInstanceEnumWmi
+ @ stub Delete

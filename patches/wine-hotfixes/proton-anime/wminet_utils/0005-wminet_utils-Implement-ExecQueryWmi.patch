@@ -1,0 +1,44 @@
+From 4dc9f06566e3a92458f5cbf67369af73c8a3c10e Mon Sep 17 00:00:00 2001
+From: Esme Povirk <esme@codeweavers.com>
+Date: Fri, 23 Jan 2026 22:02:47 +0000
+Subject: [PATCH] wminet_utils: Implement ExecQueryWmi.
+
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 4742b177..1ba3f02b 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -59,6 +59,20 @@ HRESULT WINAPI ConnectServerWmi(BSTR strNetworkResource, BSTR strUser, BSTR strP
+     return hr;
+ }
+ 
++HRESULT WINAPI ExecQueryWmi(BSTR strQueryLanguage, BSTR strQuery, long lFlags, IWbemContext *pCtx,
++    IEnumWbemClassObject **ppEnum, DWORD authLevel, DWORD impLevel, IWbemServices *pCurrentNamespace,
++    BSTR strUser, BSTR strPassword, BSTR strAuthority)
++{
++    TRACE("%s %s %lx\n", debugstr_w(strQueryLanguage), debugstr_w(strQuery), lFlags);
++
++    if (!ppEnum)
++        return E_POINTER;
++
++    *ppEnum = NULL;
++
++    return IWbemServices_ExecQuery(pCurrentNamespace, strQueryLanguage, strQuery, lFlags, pCtx, ppEnum);
++}
++
+ HRESULT WINAPI GetCurrentApartmentType(int vFunc, IComThreadingInfo *ptr, APTTYPE *aptType)
+ {
+     TRACE("%i %p %p\n", vFunc, ptr, aptType);
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index 2a2f35bd..ac25b88f 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -17,7 +17,7 @@
+ @ stub EndEnumeration
+ @ stub EndMethodEnumeration
+ @ stub ExecNotificationQueryWmi
+-@ stub ExecQueryWmi
++@ stdcall ExecQueryWmi(wstr wstr long ptr ptr long long ptr wstr wstr wstr)
+ @ stub Get
+ @ stdcall GetCurrentApartmentType(long ptr ptr)
+ @ stub GetDemultiplexedStub

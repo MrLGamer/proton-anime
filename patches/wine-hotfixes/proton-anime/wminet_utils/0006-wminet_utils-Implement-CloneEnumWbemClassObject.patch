@@ -1,0 +1,45 @@
+From afebf8c13ccbb084d735205dd9902633f8064fb0 Mon Sep 17 00:00:00 2001
+From: Esme Povirk <esme@codeweavers.com>
+Date: Fri, 23 Jan 2026 22:10:06 +0000
+Subject: [PATCH] wminet_utils: Implement CloneEnumWbemClassObject.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=59223
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 1ba3f02b..61249fd5 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -31,6 +31,20 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wminet_utils);
+ 
++HRESULT WINAPI CloneEnumWbemClassObject(IEnumWbemClassObject **ppEnum, DWORD authLevel,
++    DWORD impLevel, IEnumWbemClassObject *pCurrentEnumWbemClassObject, BSTR strUser,
++    BSTR strPassword, BSTR strAuthority)
++{
++    TRACE("\n");
++
++    if (!ppEnum)
++        return E_POINTER;
++
++    *ppEnum = NULL;
++
++    return IEnumWbemClassObject_Clone(pCurrentEnumWbemClassObject, ppEnum);
++}
++
+ HRESULT WINAPI ConnectServerWmi(BSTR strNetworkResource, BSTR strUser, BSTR strPassword,
+     BSTR strLocale, long lSecurityFlags, BSTR strAuthority, IWbemContext *pCtx,
+     IWbemServices** ppNamespace, DWORD impLevel, DWORD authLevel)
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index ac25b88f..e43f4b43 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -3,7 +3,7 @@
+ @ stub BlessIWbemServices
+ @ stub BlessIWbemServicesObject
+ @ stub Clone
+-@ stub CloneEnumWbemClassObject
++@ stdcall CloneEnumWbemClassObject(ptr long long ptr wstr wstr wstr)
+ @ stub CompareTo
+ @ stdcall ConnectServerWmi(wstr wstr wstr wstr long wstr ptr ptr long long)
+ @ stub CreateClassEnumWmi

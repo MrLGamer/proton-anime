@@ -1,0 +1,36 @@
+From 29e7e718b648279e66bb24e1676eca3b807fa302 Mon Sep 17 00:00:00 2001
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Date: Sat, 25 Jul 2026 17:37:22 +0200
+Subject: [PATCH] wminet_utils: Add NextMethod.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=60036
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 2377a1d5..b2157542 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -135,3 +135,11 @@ HRESULT WINAPI BeginMethodEnumeration(int vFunc, IWbemClassObject *ptr, LONG lEn
+ 
+     return IWbemClassObject_BeginMethodEnumeration(ptr, lEnumFlags);
+ }
++
++HRESULT WINAPI NextMethod(int vFunc, IWbemClassObject *ptr, LONG lFlags, BSTR *pstrName,
++    IWbemClassObject **ppInSignature, IWbemClassObject **ppOutSignature)
++{
++    TRACE("%i %p, %lx, %p, %p, %p\n", vFunc, ptr, lFlags, pstrName, ppInSignature, ppOutSignature);
++
++    return IWbemClassObject_NextMethod(ptr, lFlags, pstrName, ppInSignature, ppOutSignature);
++}
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index 4cddf19c..2744e0db 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -36,7 +36,7 @@
+ @ stdcall Initialize(long)
+ @ stub Lock
+ @ stub Next
+-@ stub NextMethod
++@ stdcall NextMethod(long ptr long ptr ptr ptr)
+ @ stub Put
+ @ stub PutClassWmi
+ @ stub PutInstanceWmi

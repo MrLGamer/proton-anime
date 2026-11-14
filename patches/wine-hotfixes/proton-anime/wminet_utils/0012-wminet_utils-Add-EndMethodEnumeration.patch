@@ -1,0 +1,35 @@
+From dc3816646d3ea2cbb73d0ea4f169e30f99bbde30 Mon Sep 17 00:00:00 2001
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Date: Tue, 28 Jul 2026 18:33:51 +0200
+Subject: [PATCH] wminet_utils: Add EndMethodEnumeration.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=60036
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index b2157542..1778e0f9 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -143,3 +143,10 @@ HRESULT WINAPI NextMethod(int vFunc, IWbemClassObject *ptr, LONG lFlags, BSTR *p
+ 
+     return IWbemClassObject_NextMethod(ptr, lFlags, pstrName, ppInSignature, ppOutSignature);
+ }
++
++HRESULT WINAPI EndMethodEnumeration(int vFunc, IWbemClassObject *ptr)
++{
++    TRACE("%i %p\n", vFunc, ptr);
++
++    return IWbemClassObject_EndMethodEnumeration(ptr);
++}
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index 2744e0db..bd596842 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -15,7 +15,7 @@
+ @ stub DllRegisterServer
+ @ stub DllUnregisterServer
+ @ stub EndEnumeration
+-@ stub EndMethodEnumeration
++@ stdcall EndMethodEnumeration(long ptr)
+ @ stub ExecNotificationQueryWmi
+ @ stdcall ExecQueryWmi(wstr wstr long ptr ptr long long ptr wstr wstr wstr)
+ @ stdcall Get(long ptr wstr long ptr ptr ptr)

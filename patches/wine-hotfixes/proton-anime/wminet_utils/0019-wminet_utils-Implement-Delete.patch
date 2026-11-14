@@ -1,0 +1,37 @@
+From 9b03c4ba212f8e3affe23e586ecd5f12190f54da Mon Sep 17 00:00:00 2001
+From: Esme Povirk <esme@codeweavers.com>
+Date: Tue, 13 Oct 2026 19:18:09 +0000
+Subject: [PATCH] wminet_utils: Implement Delete.
+
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index ac034275..98488290 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -117,6 +117,13 @@ HRESULT WINAPI Put(int vFunc, IWbemClassObject *ptr, LPCWSTR wszName, LONG lFlag
+     return IWbemClassObject_Put(ptr, wszName, lFlags, pVal, vtType);
+ }
+ 
++HRESULT WINAPI Delete(int vFunc, IWbemClassObject *ptr, LPCWSTR wszName)
++{
++    TRACE("%i %p %s\n", vFunc, ptr, debugstr_w(wszName));
++
++    return IWbemClassObject_Delete(ptr, wszName);
++}
++
+ HRESULT WINAPI GetCurrentApartmentType(int vFunc, IComThreadingInfo *ptr, APTTYPE *aptType)
+ {
+     TRACE("%i %p %p\n", vFunc, ptr, aptType);
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index a6529cc1..210106aa 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -8,7 +8,7 @@
+ @ stdcall ConnectServerWmi(wstr wstr wstr wstr long wstr ptr ptr long long)
+ @ stub CreateClassEnumWmi
+ @ stdcall CreateInstanceEnumWmi(wstr long ptr ptr long long ptr wstr wstr wstr)
+-@ stub Delete
++@ stdcall Delete(long ptr wstr)
+ @ stub DeleteMethod
+ @ stub DllCanUnloadNow
+ @ stub DllGetClassObject

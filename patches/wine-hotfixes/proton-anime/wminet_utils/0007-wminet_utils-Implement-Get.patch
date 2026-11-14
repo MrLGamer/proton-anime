@@ -1,0 +1,39 @@
+From 38efdd3952943c2876e74da8a17d76d0f19edc23 Mon Sep 17 00:00:00 2001
+From: Andrew Nguyen <arethusa26@gmail.com>
+Date: Sun, 8 Mar 2026 04:33:37 -0500
+Subject: [PATCH] wminet_utils: Implement Get.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=59502
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 61249fd5..41d37518 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -87,6 +87,14 @@ HRESULT WINAPI ExecQueryWmi(BSTR strQueryLanguage, BSTR strQuery, long lFlags, I
+     return IWbemServices_ExecQuery(pCurrentNamespace, strQueryLanguage, strQuery, lFlags, pCtx, ppEnum);
+ }
+ 
++HRESULT WINAPI Get(int vFunc, IWbemClassObject *ptr, LPCWSTR wszName, LONG lFlags, VARIANT *pVal,
++    CIMTYPE *pvtType, LONG *plFlavor)
++{
++    TRACE("%i %p %s %lx %p %p %p\n", vFunc, ptr, debugstr_w(wszName), lFlags, pVal, pvtType, plFlavor);
++
++    return IWbemClassObject_Get(ptr, wszName, lFlags, pVal, pvtType, plFlavor);
++}
++
+ HRESULT WINAPI GetCurrentApartmentType(int vFunc, IComThreadingInfo *ptr, APTTYPE *aptType)
+ {
+     TRACE("%i %p %p\n", vFunc, ptr, aptType);
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index e43f4b43..f98ac8fd 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -18,7 +18,7 @@
+ @ stub EndMethodEnumeration
+ @ stub ExecNotificationQueryWmi
+ @ stdcall ExecQueryWmi(wstr wstr long ptr ptr long long ptr wstr wstr wstr)
+-@ stub Get
++@ stdcall Get(long ptr wstr long ptr ptr ptr)
+ @ stdcall GetCurrentApartmentType(long ptr ptr)
+ @ stub GetDemultiplexedStub
+ @ stub GetErrorInfo

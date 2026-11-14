@@ -1,0 +1,37 @@
+From a312fc87a501a447576effe8b02444558f9bbf30 Mon Sep 17 00:00:00 2001
+From: Esme Povirk <esme@codeweavers.com>
+Date: Tue, 13 Oct 2026 19:27:28 +0000
+Subject: [PATCH] wminet_utils: Implement GetObjectText.
+
+
+diff --git a/dlls/wminet_utils/main.c b/dlls/wminet_utils/main.c
+index 84b1eeeb..6b1450d1 100644
+--- a/dlls/wminet_utils/main.c
++++ b/dlls/wminet_utils/main.c
+@@ -124,6 +124,13 @@ HRESULT WINAPI Delete(int vFunc, IWbemClassObject *ptr, LPCWSTR wszName)
+     return IWbemClassObject_Delete(ptr, wszName);
+ }
+ 
++HRESULT WINAPI GetObjectText(int vFunc, IWbemClassObject *ptr, LONG lFlags, BSTR *pstrObjectText)
++{
++    TRACE("%i %p %li %p\n", vFunc, ptr, lFlags, pstrObjectText);
++
++    return IWbemClassObject_GetObjectText(ptr, lFlags, pstrObjectText);
++}
++
+ HRESULT WINAPI GetCurrentApartmentType(int vFunc, IComThreadingInfo *ptr, APTTYPE *aptType)
+ {
+     TRACE("%i %p %p\n", vFunc, ptr, aptType);
+diff --git a/dlls/wminet_utils/wminet_utils.spec b/dlls/wminet_utils/wminet_utils.spec
+index e210440e..96953322 100644
+--- a/dlls/wminet_utils/wminet_utils.spec
++++ b/dlls/wminet_utils/wminet_utils.spec
+@@ -26,7 +26,7 @@
+ @ stub GetMethodOrigin
+ @ stdcall GetMethodQualifierSet(long ptr wstr ptr)
+ @ stdcall GetNames(long ptr wstr long ptr ptr)
+-@ stub GetObjectText
++@ stdcall GetObjectText(long ptr long ptr)
+ @ stub GetPropertyHandle
+ @ stub GetPropertyInfoByHandle
+ @ stub GetPropertyOrigin
