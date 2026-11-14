@@ -1,0 +1,35 @@
+From 8e29700de579857e8694a6579975fbb0b9dd05d5 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 20:27:36 +0100
+Subject: [PATCH] HACK: winex11: Detect the Epic Games install of the Endfield launcher
+
+Taken from the dwproton rework of the GRYPHLINK launcher patch, which also matches the Epic Games install folder.
+
+Co-authored-by: NelloKudo <marshnelloosu@gmail.com>
+---
+ dlls/winex11.drv/init.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index f12408a6e5d..947eb40eab8 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -443,10 +443,14 @@ BOOL is_gryphlink_launcher(void)
+     {
+         static const WCHAR gryphlinkW[] = {'\\','g','r','y','p','h','l','i','n','k','\\'};
+         static const WCHAR gamesW[] = {'\\','g','r','y','p','h','l','i','n','k','\\','g','a','m','e','s','\\'};
++        static const WCHAR egsW[] = {'\\','a','r','k','n','i','g','h','t','s','e','n','d','f','i','e','l','d','g','o','w','o','u','\\'};
++        static const WCHAR egs_gamesW[] = {'\\','a','r','k','n','i','g','h','t','s','e','n','d','f','i','e','l','d','g','o','w','o','u','\\','g','a','m','e','s','\\'};
+         const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
+ 
+-        cached = image_path_has_folder( image, gryphlinkW, ARRAY_SIZE(gryphlinkW) ) &&
+-                 !image_path_has_folder( image, gamesW, ARRAY_SIZE(gamesW) );
++        cached = (image_path_has_folder( image, gryphlinkW, ARRAY_SIZE(gryphlinkW) ) &&
++                  !image_path_has_folder( image, gamesW, ARRAY_SIZE(gamesW) )) ||
++                 (image_path_has_folder( image, egsW, ARRAY_SIZE(egsW) ) &&
++                  !image_path_has_folder( image, egs_gamesW, ARRAY_SIZE(egs_gamesW) ));
+     }
+     return cached;
+ }
+-- 
+2.51.0
