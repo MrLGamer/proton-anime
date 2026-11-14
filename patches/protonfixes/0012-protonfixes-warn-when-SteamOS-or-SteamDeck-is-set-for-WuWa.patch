@@ -1,0 +1,94 @@
+From 4751391ef7920a6976c82e50bef8672fc2be684f Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 13:57:38 +0100
+Subject: [PATCH] protonfixes: warn when SteamOS or SteamDeck is set for
+ Wuthering Waves
+
+Off a Deck the variables can only come from the user. Pop a wine message
+box and hold the launch until it is closed, and keep the helper around
+for other gamefixes.
+---
+ gamefixes-steam/3513350.py | 18 +++++++++++++++++-
+ util.py                    | 27 +++++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/gamefixes-steam/3513350.py b/gamefixes-steam/3513350.py
+index 9399edb..591c3a4 100644
+--- a/gamefixes-steam/3513350.py
++++ b/gamefixes-steam/3513350.py
+@@ -13,10 +13,12 @@ from protonfixes.logger import log
+ def main() -> None:
+     """As of version 3.4, SteamOS/SteamDeck env vars force a broken plugin in-game to play videos."""
+     """Unsetting them to also prevent issues on Steam Decks where they are set by default."""
+-    """Elsewhere they can only come from the user, so leave them alone there."""
++    """Elsewhere they can only come from the user, so keep them and warn."""
+     if _is_steamos():
+         util.del_environment('SteamOS')
+         util.del_environment('SteamDeck')
++    else:
++        _warn_about_deck_vars()
+ 
+     try:
+         _write_engine_ini()
+@@ -25,6 +27,20 @@ def main() -> None:
+         log.warn(e)
+ 
+ 
++def _warn_about_deck_vars() -> None:
++    flags = [v for v in ('SteamOS', 'SteamDeck') if os.environ.get(v) == '1']
++    if not flags:
++        return
++    names = ' and '.join(f'{v}=1' for v in flags)
++    verb, them = ('is', 'it') if len(flags) == 1 else ('are', 'them')
++    util.show_warning(
++        f'{names} {verb} set for Wuthering Waves.\n\n'
++        'This Proton already brings the fixes the game needs, and setting '
++        f'{them} anyway can cause issues in game. Only use {them} when you '
++        'have issues or for debugging.'
++    )
++
++
+ def _is_steamos() -> bool:
+     """The container's own os-release is the runtime's, the host's sits under /run/host."""
+     for path in ('/run/host/etc/os-release', '/etc/os-release'):
+diff --git a/util.py b/util.py
+index ea1d730..80884c1 100644
+--- a/util.py
++++ b/util.py
+@@ -951,6 +951,33 @@ def try_show_gui_error(text: str) -> None:
+             log.info('Failed to show error message with the following text: ' + text)
+ 
+ 
++def show_warning(text: str, title: str = 'Anime-Proton') -> None:
++    """Pops a wine message box and holds the launch until the user closes it."""
++    log.warn(text)
++    env = dict(protonmain.g_session.env)
++    env['WINEPREFIX'] = str(protonprefix())
++    env['WINE'] = protonmain.g_proton.wine_bin
++    env['WINELOADER'] = protonmain.g_proton.wine_bin
++    env['WINESERVER'] = protonmain.g_proton.wineserver_bin
++    prompt = ' & vbCrLf & '.join(
++        '"' + line.replace('"', '""') + '"' for line in text.split('\n')
++    )
++    script = protonprefix() / 'drive_c/windows/temp/protonfixes-warning.vbs'
++    try:
++        script.parent.mkdir(parents=True, exist_ok=True)
++        script.write_text(f'MsgBox {prompt}, 48, "{title}"\r\n', encoding='cp1252', errors='replace')
++        subprocess.run(
++            [env['WINE'], 'wscript.exe', 'C:\\windows\\temp\\protonfixes-warning.vbs'],
++            env=env,
++            stdin=subprocess.DEVNULL,
++            stdout=subprocess.DEVNULL,
++            stderr=subprocess.DEVNULL,
++            check=False,
++        )
++    except OSError as e:
++        log.warn(f'Failed to show the warning dialog: {e}')
++
++
+ def is_smt_enabled() -> bool:
+     """Returns whether SMT is enabled.
+ 
+-- 
+2.53.0.697.g625c4fb2daa
+
