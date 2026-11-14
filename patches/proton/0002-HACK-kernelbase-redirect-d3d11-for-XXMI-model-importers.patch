@@ -1,0 +1,83 @@
+From a6cc4f415322f3dd6487b43776ec9f977a1da7ec Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 18 Jul 2026 15:34:46 +0200
+Subject: [PATCH] HACK: kernelbase: redirect d3d11.dll for XXMI model
+ importers
+
+Set by protonfixes when a PROTON_USE_<importer> flag deploys an XXMI
+package. This redirects the game's d3d11.dll and d3dcompiler_47.dll
+loads to the deployed 3dmigoto wrapper, explicit system32 loads are
+left alone so it can still chain-load the real d3d11. Loads happen
+with LOAD_WITH_ALTERED_SEARCH_PATH so 3dmigoto picks up the deployed
+d3dcompiler instead of the wine builtin, and only when the file
+actually exists.
+---
+ dlls/kernelbase/loader.c | 45 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+index c514aac..b9566bd 100644
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -609,6 +609,44 @@ BOOL loaddll_upscaler_hack(LPCWSTR name, LPWSTR override)
+ }
+ 
+ 
++/*
++ * WINE_XXMI_PATH=c:\xxmi\EFMI: redirect by-name d3d11.dll /
++ * d3dcompiler_47.dll loads there (the deployed 3dmigoto wrapper);
++ * explicit system dir loads are 3dmigoto chain-loading the real d3d11.
++ */
++BOOL loaddll_xxmi_hack(LPCWSTR name, LPWSTR override)
++{
++    WCHAR xxmi_pathW[MAX_PATH] = {0};
++    WCHAR lowerW[MAX_PATH] = {0};
++    LPCWSTR basename;
++    UINT ret;
++    int i;
++
++    ret = GetEnvironmentVariableW( L"WINE_XXMI_PATH", xxmi_pathW, ARRAY_SIZE(xxmi_pathW) );
++    if ( !ret || ret >= ARRAY_SIZE(xxmi_pathW) ) return FALSE;
++
++    basename = wcsrchr( name, L'\\' );
++    if (!basename) basename = wcsrchr( name, L'/' );
++    basename = basename ? basename + 1 : name;
++    if (wcsicmp( basename, L"d3d11.dll" ) && wcsicmp( basename, L"d3dcompiler_47.dll" ))
++        return FALSE;
++
++    if (wcslen( name ) >= ARRAY_SIZE(lowerW)) return FALSE;
++    for (i = 0; name[i]; i++)
++        lowerW[i] = (name[i] >= L'A' && name[i] <= L'Z') ? name[i] + 32 : name[i];
++
++    if (wcsstr( lowerW, L"\\system32\\" ) || wcsstr( lowerW, L"\\syswow64\\" )) return FALSE;
++    if (wcsstr( lowerW, L"\\xxmi\\" )) return FALSE;
++
++    if (wcslen( xxmi_pathW ) + wcslen( basename ) + 2 > MAX_PATH) return FALSE;
++    wcscpy( override, xxmi_pathW );
++    if (override[wcslen( override ) - 1] != L'\\') wcscat( override, L"\\" );
++    wcscat( override, basename );
++    if (GetFileAttributesW( override ) == INVALID_FILE_ATTRIBUTES) return FALSE;
++    return TRUE;
++}
++
++
+ /***********************************************************************
+  *	LoadLibraryExW   (kernelbase.@)
+  */
+@@ -633,6 +673,13 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
+ 
+     if ( loaddll_upscaler_hack(name, overrideW) )
+         FIXME( "HACK: redirecting %s to %s\n", debugstr_w(name), debugstr_w(overrideW));
++    else if ( loaddll_xxmi_hack(name, overrideW) )
++    {
++        FIXME( "HACK: XXMI: redirecting %s to %s\n", debugstr_w(name), debugstr_w(overrideW));
++        flags = (flags & ~(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
++                           LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 |
++                           LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)) | LOAD_WITH_ALTERED_SEARCH_PATH;
++    }
+ 
+     RtlInitUnicodeString( &str, overrideW[0] ? overrideW : name );
+     if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ') return load_library( &str, flags );
+-- 
+2.51.0
+

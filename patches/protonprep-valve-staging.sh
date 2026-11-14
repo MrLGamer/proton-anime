@@ -679,6 +679,15 @@ apply_all_in_dir() {
     echo "WINE: -PENDING- ntdll: let a thread killed during its startup exit instead of hanging (Helldivers 2 thread growth)"
     apply_patch "../patches/wine-hotfixes/pending/ntdll-dont-keep-reply-pipe-open-during-thread-init.patch"
 
+### (2-8) PROTON-ANIME CUSTOM PATCHES ###
+
+    echo "WINE: -PROTON-ANIME- HACK: kernelbase d3d11 redirect for XXMI model importers"
+    apply_patch "../patches/proton/0002-HACK-kernelbase-redirect-d3d11-for-XXMI-model-importers.patch"
+
+    apply_all_in_dir "../patches/wine-hotfixes/proton-anime/"
+
+### END PROTON-ANIME CUSTOM PATCHES ###
+
     echo "WINE: RUN AUTOCONF TOOLS/MAKE_REQUESTS"
     autoreconf -f
     ./tools/make_requests

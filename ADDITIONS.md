@@ -68,7 +68,8 @@ D3D11 by default.
 
 **Mods** go into `~/.local/share/xxmi/<IMPORTER>/Mods/` (under Flatpak Steam,
 `~/.var/app/com.valvesoftware.Steam/data/xxmi/`). The folder is shared between prefixes
-and survives prefix deletion. Press `F10` in-game to hot-reload mods. Set
+and survives prefix deletion. The deployed importer itself (`d3dx.ini`, `ShaderFixes/`,
+logs) is symlinked next to it as `Importer`. Press `F10` in-game to hot-reload mods. Set
 `PROTON_XXMI_MODS_PATH=/some/dir` for a custom location, or `=0` to keep mods in a
 plain folder inside the prefix.
 
@@ -92,6 +93,7 @@ environment variables, applied on every launch (unset means the launcher default
 | <tt>PROTON_XXMI_MUTE_WARNINGS=0</tt> | Mute Warnings (default on) | Show 3dmigoto's ini parser warning overlay again |
 | <tt>PROTON_XXMI_HUNTING=1</tt> | Enable Hunting | Shader hunting mode + overlay (`Numpad 0` toggles it in-game) |
 | <tt>PROTON_XXMI_DUMP_SHADERS=1</tt> | Dump Shaders | Marking a shader while hunting also dumps its HLSL/ASM to `ShaderFixes` |
+| <tt>PROTON_XXMI_CACHE_SHADERS=1</tt> | Cache Shaders | Cache patched shaders as `.bin` in `ShaderCache`, removes shader loading stalls |
 | <tt>PROTON_XXMI_CALLS_LOGGING=1</tt> | Calls Logging | Log D3D11 calls to `d3d11_log.txt` |
 | <tt>PROTON_XXMI_DEBUG_LOGGING=1</tt> | Debug Logging | Verbose debug output in `d3d11_log.txt` |
 | <tt>PROTON_XXMI_DELAY=&lt;ms&gt;</tt> | XXMI Delay | 3dmigoto initialization delay in ms (defaults: WWMI `500`, others `0`) |
