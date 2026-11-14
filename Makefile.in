@@ -691,8 +691,7 @@ $(OBJ)/.wine-aarch64-post-build:
 	mkdir -p $(DST_DIR)/bin-arm64
 	$(call install-strip,$(WINE_aarch64_DST)/bin/wine,$(DST_DIR)/bin-arm64)
 	$(call install-strip,$(WINE_aarch64_DST)/bin/wineserver,$(DST_DIR)/bin-arm64)
-	ln -s bin-arm64 bin
-	cp -a bin $(DST_DIR)/
+	ln -sfn bin-arm64 $(DST_DIR)/bin
 	cp -a $(WINE_aarch64_DST)/bin/msidb $(DST_DIR)/bin-arm64/
 ifeq ($(findstring x86_64,$(unix_ARCHS)),)
 	mkdir -p $(DST_DIR)/share
