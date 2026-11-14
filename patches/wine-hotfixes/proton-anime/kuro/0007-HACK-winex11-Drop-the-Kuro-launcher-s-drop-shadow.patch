@@ -1,0 +1,101 @@
+From 3c1d4f7a2b9e8d6c5a4f3e2d1c0b9a8f7e6d5c4b Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 15:50:00 +0100
+Subject: [PATCH] HACK: winex11: Drop the Kuro launcher's drop shadow
+
+The WPF host draws a drop shadow around the webview, which shows up as a
+faint frame next to the desktop's own shadows. Drop everything under 3/8
+alpha from its layered surface; the splash box sits at 60% and stays.
+Done on a copy since win32u derives the window shape from these bits.
+
+---
+ dlls/winex11.drv/bitblt.c  | 17 ++++++++++++++++-
+ dlls/winex11.drv/init.c    | 33 +++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/x11drv.h  |  1 +
+ 3 files changed, 50 insertions(+), 1 deletion(-)
+
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -1809,6 +1809,7 @@
+     const unsigned char *src = color_bits;
+     unsigned char *dst = (unsigned char *)ximage->data;
+     RECT rect = *surface_rect;
++    XImage *copy = NULL;
+ 
+     OffsetRect( &rect, surface->x_offset, surface->y_offset );
+ 
+@@ -1866,7 +1867,20 @@
+ #endif /* HAVE_LIBXSHAPE */
+     }
+ 
+-    if (!put_shm_image( ximage, &surface->image->shminfo, surface->window, surface->gc, &rect, dirty ))
++    if (alpha_mask == 0xff000000 && ximage->bits_per_pixel == 32 && !surface->byteswap && is_kuro_launcher_host() &&
++        (copy = XSubImage( ximage, dirty->left, dirty->top, dirty->right - dirty->left, dirty->bottom - dirty->top )))
++    {
++        int x, y, stride = copy->bytes_per_line / sizeof(ULONG);
++        ULONG *ptr = (ULONG *)copy->data;
++
++        for (y = 0; y < copy->height; y++, ptr += stride)
++            for (x = 0; x < copy->width; x++)
++                if ((ptr[x] >> 24) < 0x60) ptr[x] = 0;
++        XPutImage( gdi_display, surface->window, surface->gc, copy, 0, 0,
++                   rect.left + dirty->left, rect.top + dirty->top, copy->width, copy->height );
++        XDestroyImage( copy );
++    }
++    else if (!put_shm_image( ximage, &surface->image->shminfo, surface->window, surface->gc, &rect, dirty ))
+         XPutImage( gdi_display, surface->window, surface->gc, ximage, dirty->left,
+                    dirty->top, rect.left + dirty->left, rect.top + dirty->top,
+                    dirty->right - dirty->left, dirty->bottom - dirty->top );
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -367,6 +367,38 @@
+     return cached;
+ }
+ 
++BOOL is_kuro_launcher_host(void)
++{
++    static int cached = -1;
++
++    if (cached == -1)
++    {
++        static const WCHAR runtimeW[] = {'K','R','W','e','b','V','i','e','w','R','u','n','t','i','m','e',0};
++        const UNICODE_STRING *image = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
++        WCHAR path[MAX_PATH + 4] = {'\\','?','?','\\'};
++        FILE_BASIC_INFORMATION info;
++        OBJECT_ATTRIBUTES attr;
++        UNICODE_STRING str;
++        const WCHAR *p;
++        unsigned int dir_len;
++
++        cached = 0;
++        if (!is_kuro_webview_process() && image->Buffer && (p = wcsrchr( image->Buffer, '\\' )))
++        {
++            dir_len = p - image->Buffer + 1;
++            if (4 + dir_len + ARRAY_SIZE(runtimeW) <= ARRAY_SIZE(path))
++            {
++                memcpy( path + 4, image->Buffer, dir_len * sizeof(WCHAR) );
++                memcpy( path + 4 + dir_len, runtimeW, sizeof(runtimeW) );
++                RtlInitUnicodeString( &str, path );
++                InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE, 0, NULL );
++                cached = !NtQueryAttributesFile( &attr, &info );
++            }
++        }
++    }
++    return cached;
++}
++
+ /* the launcher page has rounded corners, keep its alpha all the way to the toplevel */
+ static BOOL kuro_webview_alpha(void)
+ {
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -372,6 +372,7 @@
+ extern BOOL layered_overlay_alpha_enabled(void);
+ extern BOOL layered_overlay_input_shape_enabled(void);
+ extern BOOL is_kuro_webview_process(void);
++extern BOOL is_kuro_launcher_host(void);
+ extern BOOL is_gryphlink_launcher(void);
+ extern BOOL get_window_visual_info( Window window, XVisualInfo *info );
+ extern void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode, const XVisualInfo *visual, BOOL opaque );
+-- 
+2.51.0
