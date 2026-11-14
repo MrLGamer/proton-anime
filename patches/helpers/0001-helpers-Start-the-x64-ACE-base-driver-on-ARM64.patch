@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 05 Nov 2026 19:53:46 +0100
+Subject: [PATCH] helpers: Start the x64 ACE base driver on ARM64.
+
+---
+ steam_helper/steam.c |   38 ++++++++++++++++++++++++++++++++++++++
+ umu_helper/umu.c     |   38 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+
+diff --git a/steam_helper/steam.c b/steam_helper/steam.c
+--- a/steam_helper/steam.c
++++ b/steam_helper/steam.c
+@@ -415,6 +415,41 @@
+     CloseServiceHandle( manager );
+ }
+ 
++static void start_ace_base_driver(void)
++{
++    WCHAR path[MAX_PATH] = L"C:\\Program Files\\AntiCheatExpert\\ACE-BASE.sys", full[MAX_PATH];
++    SC_HANDLE manager, service;
++    USHORT current, native;
++    WIN32_FIND_DATAW data;
++    HANDLE find;
++
++    if (!IsWow64Process2( GetCurrentProcess(), &current, &native ) || native != IMAGE_FILE_MACHINE_ARM64) return;
++    if (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES)
++    {
++        if ((find = FindFirstFileW( L"*", &data )) == INVALID_HANDLE_VALUE) return;
++        do swprintf( path, ARRAY_SIZE(path), L"%s\\Binaries\\Win64\\AntiCheatExpert\\ACE-BASE.sys", data.cFileName );
++        while (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES && FindNextFileW( find, &data ));
++        FindClose( find );
++        if (!GetFullPathNameW( path, ARRAY_SIZE(full), full, NULL ) || GetFileAttributesW( full ) == INVALID_FILE_ATTRIBUTES) return;
++        wcscpy( path, full );
++    }
++
++    if (!(manager = OpenSCManagerW( NULL, NULL, SC_MANAGER_ALL_ACCESS ))) return;
++    if ((service = OpenServiceW( manager, L"Proton-ACE-BASE", SERVICE_CHANGE_CONFIG | SERVICE_START )))
++        ChangeServiceConfigW( service, SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
++                              path, NULL, NULL, NULL, NULL, NULL, NULL );
++    else
++        service = CreateServiceW( manager, L"Proton-ACE-BASE", L"Proton-ACE-BASE", SERVICE_CHANGE_CONFIG | SERVICE_START,
++                                  SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
++                                  path, NULL, NULL, NULL, NULL, NULL );
++    if (service)
++    {
++        StartServiceW( service, 0, NULL );
++        CloseServiceHandle( service );
++    }
++    CloseServiceHandle( manager );
++}
++
+ static WCHAR *fixup_cmdline_paths( WCHAR *cmdline )
+ {
+     const WCHAR argname[] = L"-game";
+@@ -1041,6 +1076,9 @@
+             setup_vr_registry();
+ 
+         if (game_process)
++            start_ace_base_driver();
++
++        if (game_process)
+             setup_discord_bridge_service();
+ 
+         child = run_process(&should_await, game_process);
+diff --git a/umu_helper/umu.c b/umu_helper/umu.c
+--- a/umu_helper/umu.c
++++ b/umu_helper/umu.c
+@@ -333,6 +333,41 @@
+     CloseServiceHandle( manager );
+ }
+ 
++static void start_ace_base_driver(void)
++{
++    WCHAR path[MAX_PATH] = L"C:\\Program Files\\AntiCheatExpert\\ACE-BASE.sys", full[MAX_PATH];
++    SC_HANDLE manager, service;
++    USHORT current, native;
++    WIN32_FIND_DATAW data;
++    HANDLE find;
++
++    if (!IsWow64Process2( GetCurrentProcess(), &current, &native ) || native != IMAGE_FILE_MACHINE_ARM64) return;
++    if (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES)
++    {
++        if ((find = FindFirstFileW( L"*", &data )) == INVALID_HANDLE_VALUE) return;
++        do swprintf( path, ARRAY_SIZE(path), L"%s\\Binaries\\Win64\\AntiCheatExpert\\ACE-BASE.sys", data.cFileName );
++        while (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES && FindNextFileW( find, &data ));
++        FindClose( find );
++        if (!GetFullPathNameW( path, ARRAY_SIZE(full), full, NULL ) || GetFileAttributesW( full ) == INVALID_FILE_ATTRIBUTES) return;
++        wcscpy( path, full );
++    }
++
++    if (!(manager = OpenSCManagerW( NULL, NULL, SC_MANAGER_ALL_ACCESS ))) return;
++    if ((service = OpenServiceW( manager, L"Proton-ACE-BASE", SERVICE_CHANGE_CONFIG | SERVICE_START )))
++        ChangeServiceConfigW( service, SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
++                              path, NULL, NULL, NULL, NULL, NULL, NULL );
++    else
++        service = CreateServiceW( manager, L"Proton-ACE-BASE", L"Proton-ACE-BASE", SERVICE_CHANGE_CONFIG | SERVICE_START,
++                                  SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
++                                  path, NULL, NULL, NULL, NULL, NULL );
++    if (service)
++    {
++        StartServiceW( service, 0, NULL );
++        CloseServiceHandle( service );
++    }
++    CloseServiceHandle( manager );
++}
++
+ static HANDLE run_process(BOOL *should_await, BOOL game_process)
+ {
+     WCHAR *cmdline = GetCommandLineW();
+@@ -623,6 +658,9 @@
+             setup_vr_registry();
+ 
+         if (game_process)
++            start_ace_base_driver();
++
++        if (game_process)
+             setup_discord_bridge_service();
+ 
+         child = run_process(&should_await, game_process);
+-- 
+2.50.0

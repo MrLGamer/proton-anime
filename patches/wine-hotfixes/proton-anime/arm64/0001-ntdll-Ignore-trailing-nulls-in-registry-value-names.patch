@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Thu, 05 Nov 2026 19:53:18 +0100
+Subject: [PATCH] ntdll: Ignore trailing nulls in registry value names.
+
+---
+ dlls/ntdll/unix/registry.c |   14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/dlls/ntdll/unix/registry.c b/dlls/ntdll/unix/registry.c
+--- a/dlls/ntdll/unix/registry.c
++++ b/dlls/ntdll/unix/registry.c
+@@ -731,6 +731,16 @@
+ }
+ 
+ 
++static UNICODE_STRING trim_value_name( const UNICODE_STRING *name )
++{
++    UNICODE_STRING str = *name;
++
++    while (str.Length >= sizeof(WCHAR) && !str.Buffer[str.Length / sizeof(WCHAR) - 1])
++        str.Length -= sizeof(WCHAR);
++    return str;
++}
++
++
+ /******************************************************************************
+  *              NtQueryValueKey  (NTDLL.@)
+  */
+@@ -741,9 +751,11 @@
+     unsigned int ret;
+     UCHAR *data_ptr;
+     unsigned int fixed_size, min_size;
++    UNICODE_STRING value_name = trim_value_name( name );
+ 
+     TRACE( "(%p,%s,%d,%p,%d)\n", handle, debugstr_us(name), info_class, info, length );
+ 
++    name = &value_name;
+     if (name->Length > MAX_VALUE_LENGTH) return STATUS_OBJECT_NAME_NOT_FOUND;
+ 
+     /* compute the length we want to retrieve */
+@@ -823,9 +835,11 @@
+                                ULONG type, const void *data, ULONG count )
+ {
+     unsigned int ret;
++    UNICODE_STRING value_name = trim_value_name( name );
+ 
+     TRACE( "(%p,%s,%d,%p,%d)\n", key, debugstr_us(name), type, data, count );
+ 
++    name = &value_name;
+     if (name->Length > MAX_VALUE_LENGTH) return STATUS_INVALID_PARAMETER;
+ 
+     SERVER_START_REQ( set_key_value )
+-- 
+2.50.0
