@@ -3133,6 +3133,9 @@ class Session:
 
         if platform.machine() == 'aarch64':
             self.env.setdefault("FEX_DISKCACHE", "1")
+            # .NET's W^X writes code through a second RW mapping of the same pages, which
+            # FEX's code tracking misses. Kuro's launcher spins forever in its prestub.
+            self.env.setdefault("DOTNET_EnableWriteXorExecute", "0")
             if os.environ.get("SteamGameId", 0) == "1167630": # Teardown
                 # https://github.com/microsoft/mimalloc/issues/958
                 self.env["MIMALLOC_DISABLE_REDIRECT"] = "1"
