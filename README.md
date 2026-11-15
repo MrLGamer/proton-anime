@@ -40,20 +40,42 @@ Proton-Anime release.
 
 Legend: ✅ working &nbsp;|&nbsp; ⚠️ working with issues &nbsp;|&nbsp; 🧪 untested / needs verification &nbsp;|&nbsp; ❌ broken
 
+### x86_64
+
 | Game | Distribution | Status | Known issues |
 | ---- | ------------ | ------ | ------------ |
-| Wuthering Waves            | Steam / Epic / launcher     | ✅ | — |
-| Genshin Impact             | HYP launcher / Epic         | ✅ | — |
-| Honkai: Star Rail          | HYP launcher / Epic         | ✅ | — |
-| Zenless Zone Zero          | Steam / HYP launcher / Epic | ✅ | — |
-| Honkai Impact 3rd          | Steam / HYP launcher / Epic | ✅ | — |
-| Arknights: Endfield        | Epic / launcher             | ✅ | — |
+| Wuthering Waves            | Steam / launcher            | ✅ | — |
+| Genshin Impact             | HYP launcher                | ✅ | — |
+| Honkai: Star Rail          | HYP launcher                | ✅ | — |
+| Zenless Zone Zero          | Steam / HYP launcher        | ✅ | — |
+| Honkai Impact 3rd          | Steam / HYP launcher        | ✅ | — |
+| Arknights: Endfield        | launcher                    | ✅ | — |
 | Punishing: Gray Raven      | Steam / launcher            | ✅ | — |
-| Duet Night Abyss           | Steam / Epic / launcher     | ✅ | — |
-| Neverness to Everness      | Steam / Epic / launcher     | ✅ | — |
-| Infinity Nikki             | Steam / Epic / launcher     | 🧪 | — |
-| Tower of Fantasy           | Steam / launcher            | 🧪 | — |
+| Duet Night Abyss           | Steam                       | ✅ | — |
+| Neverness to Everness      | Steam                       | ✅ | — |
+| Infinity Nikki             | Steam / Epic / launcher     | 🧪 | test pending |
+| Tower of Fantasy           | Steam / launcher            | 🧪 | test pending |
 | Goddess of Victory: NIKKE  | launcher                    | ✅ | — |
+
+### ARM64
+
+ARM64 builds run the games through FEX x86-64 emulation. Support is experimental and so far
+only tested through Steam on an Ayn Odin 3.
+
+| Game | Distribution | Status | Known issues |
+| ---- | ------------ | ------ | ------------ |
+| Wuthering Waves            | Steam                       | 🧪 | test pending, launcher is fixed |
+| Genshin Impact             | Epic                        | 🧪 | test pending |
+| Honkai: Star Rail          | Epic                        | 🧪 | test pending |
+| Zenless Zone Zero          | Steam                       | ✅ | — |
+| Honkai Impact 3rd          | Steam                       | ✅ | — |
+| Arknights: Endfield        | Steam                       | ✅ | — |
+| Punishing: Gray Raven      | Steam                       | 🧪 | test pending |
+| Duet Night Abyss           | Steam                       | 🧪 | test pending |
+| Neverness to Everness      | Steam                       | 🧪 | test pending |
+| Infinity Nikki             | Steam                       | 🧪 | test pending |
+| Tower of Fantasy           | Steam                       | 🧪 | test pending |
+| Goddess of Victory: NIKKE  | X                           | ❌ | no platform for testing available |
 
 > [!Note]
 > None of these games officially support Linux, so a residual risk always remains. Whether
