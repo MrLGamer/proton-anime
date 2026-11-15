@@ -14,7 +14,7 @@ on:
 jobs:
   proton:
     name: Build ${{ inputs.name }}
-    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
       - name: Cleanup disk space
         uses: endersonmenezes/free-disk-space@v3
