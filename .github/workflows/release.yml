@@ -21,6 +21,13 @@ jobs:
     with:
       name: ${{ github.ref_name }}
 
+  build-arm64:
+    name: Build ARM64
+    uses: ./.github/workflows/_job_build.yml
+    with:
+      name: ${{ github.ref_name }}-arm64
+      arch: arm64
+
   release:
     name: Release
     needs: build
@@ -53,11 +60,15 @@ jobs:
   upload:
     name: Upload
     needs: release
-    strategy:
-      matrix:
-        include:
-          - name: ${{ github.ref_name }}
     uses: ./.github/workflows/_job_upload.yml
     with:
       version: ${{ github.ref_name }}
-      name: ${{ matrix.name }}
+      name: ${{ github.ref_name }}
+
+  upload-arm64:
+    name: Upload ARM64
+    needs: [release, build-arm64]
+    uses: ./.github/workflows/_job_upload.yml
+    with:
+      version: ${{ github.ref_name }}
+      name: ${{ github.ref_name }}-arm64

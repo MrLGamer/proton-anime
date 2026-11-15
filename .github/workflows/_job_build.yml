@@ -6,14 +6,19 @@ on:
       name:
         required: true
         type: string
+      arch:
+        required: false
+        type: string
+        default: x86_64
 
 jobs:
   proton:
     name: Build ${{ inputs.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - name: Cleanup disk space
         uses: endersonmenezes/free-disk-space@v3
+        continue-on-error: ${{ inputs.arch == 'arm64' }}
         with:
           remove_android: true
           remove_dotnet: true
@@ -32,16 +37,22 @@ jobs:
             /usr/local/.ghcup
 
       - name: Prepare host
-        run: sudo apt update && sudo apt-get install -y ccache fontforge-nox
+        run: |
+          sudo apt update && sudo apt-get install -y ccache fontforge-nox
+          df -h /
+
+      - name: Cache key
+        id: cache-key
+        run: echo "prefix=${{ inputs.arch == 'arm64' && 'ccache-arm64-proton' || 'ccache-proton' }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore cache
         id: ccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
-          key: ccache-proton-${{ github.run_id }}
+          key: ${{ steps.cache-key.outputs.prefix }}-${{ github.run_id }}
           restore-keys: |
-            ccache-proton
+            ${{ steps.cache-key.outputs.prefix }}
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -68,7 +79,7 @@ jobs:
       - name: Configure
         working-directory: ./build
         run: |
-          ../configure.sh --build-name=${{ inputs.name }} --container-engine=docker
+          ../configure.sh --build-name=${{ inputs.name }} --container-engine=docker --target-arch=${{ inputs.arch }}
 
       - name: Make ${{ inputs.name }}
         working-directory: ./build

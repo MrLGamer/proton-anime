@@ -1,6 +1,13 @@
 name: Development
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: Target architecture
+        type: choice
+        options: [x86_64, arm64]
+        default: x86_64
 
 concurrency:
   group: ${{ github.ref_name }}
@@ -39,5 +46,6 @@ jobs:
     needs: version
     uses: ./.github/workflows/_job_build.yml
     with:
-      name: ${{ needs.version.outputs.full_desc }}-${{ needs.version.outputs.branch }}
+      name: ${{ needs.version.outputs.full_desc }}-${{ needs.version.outputs.branch }}${{ inputs.arch == 'arm64' && '-arm64' || '' }}
+      arch: ${{ inputs.arch }}
 
