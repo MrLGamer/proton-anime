@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MrLGamer <mrlgam3r@gmail.com>
+Date: Sat, 14 Nov 2026 23:48:46 +0100
+Subject: [PATCH] ntdll: Reject addresses outside user space in RtlIsEcCode.
+
+---
+ dlls/ntdll/signal_arm64ec.c |    9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -1410,8 +1410,17 @@
+  */
+ BOOLEAN WINAPI RtlIsEcCode( ULONG_PTR ptr )
+ {
++    static ULONG_PTR limit;
+     const UINT64 *map = (const UINT64 *)NtCurrentTeb()->Peb->EcCodeBitMap;
+     ULONG_PTR page = ptr / page_size;
++
++    if (!limit)
++    {
++        SYSTEM_BASIC_INFORMATION info;
++        if (NtQuerySystemInformation( SystemBasicInformation, &info, sizeof(info), NULL )) return FALSE;
++        limit = (ULONG_PTR)info.HighestUserAddress;
++    }
++    if (ptr > limit) return FALSE;
+     return (map[page / 64] >> (page & 63)) & 1;
+ }
+ 
+-- 
+2.51.0
