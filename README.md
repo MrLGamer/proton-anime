@@ -64,15 +64,15 @@ only tested through Steam on an Ayn Odin 3.
 
 | Game | Distribution | Status | Known issues |
 | ---- | ------------ | ------ | ------------ |
-| Wuthering Waves            | Steam                       | 🧪 | test pending, launcher is fixed |
+| Wuthering Waves            | Steam                       | ✅ | — |
 | Genshin Impact             | Epic                        | 🧪 | test pending |
 | Honkai: Star Rail          | Epic                        | 🧪 | test pending |
-| Zenless Zone Zero          | Steam                       | ✅ | — |
+| Zenless Zone Zero          | Steam                       | ⚠️ | Device sometimes shuts off when game is compiling shaders |
 | Honkai Impact 3rd          | Steam                       | ✅ | — |
 | Arknights: Endfield        | Steam                       | ✅ | — |
 | Punishing: Gray Raven      | Steam                       | 🧪 | test pending |
 | Duet Night Abyss           | Steam                       | 🧪 | test pending |
-| Neverness to Everness      | Steam                       | 🧪 | test pending |
+| Neverness to Everness      | Steam                       | ❌ | game doesn't boot |
 | Infinity Nikki             | Steam                       | 🧪 | test pending |
 | Tower of Fantasy           | Steam                       | 🧪 | test pending |
 | Goddess of Victory: NIKKE  | X                           | ❌ | no platform for testing available |
